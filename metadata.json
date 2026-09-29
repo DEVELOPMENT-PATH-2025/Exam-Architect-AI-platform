@@ -1,0 +1,6 @@
+{
+  "name": "ExamArchitect AI",
+  "description": "Personalized exam-prep application that transforms university curriculum and textbooks into interactive practice modules using Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["AI-powered question generation", "Document parsing", "Diagram revision", "PDF mock paper generation"]
+}
