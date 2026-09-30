@@ -188,13 +188,19 @@ export default function App() {
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-2">Academic Workspace</div>
           <NavItem 
             icon={<Layout className="w-4 h-4" />} 
-            label="Syllabus Mapping" 
-            active={activeTab === 'dashboard' || activeTab === 'upload'} 
+            label="Dashboard" 
+            active={activeTab === 'dashboard'} 
             onClick={() => setActiveTab('dashboard')} 
           />
           <NavItem 
+            icon={<BookOpen className="w-4 h-4" />} 
+            label="My Syllabus" 
+            active={activeTab === 'upload'} 
+            onClick={() => setActiveTab('upload')} 
+          />
+          <NavItem 
             icon={<BrainCircuit className="w-4 h-4" />} 
-            label="Question Architect" 
+            label="Practice Studio" 
             active={activeTab === 'practice'} 
             disabled={!curriculum}
             onClick={() => setActiveTab('practice')} 
@@ -203,7 +209,7 @@ export default function App() {
           <div className="pt-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-2">Resources</div>
           <NavItem 
             icon={<FileText className="w-4 h-4" />} 
-            label="Sample Papers" 
+            label="500+ Boost Questions" 
             active={activeTab === 'mock'} 
             disabled={!curriculum}
             onClick={() => setActiveTab('mock')} 
