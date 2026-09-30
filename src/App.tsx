@@ -115,6 +115,7 @@ export default function App() {
   const updateProfile = async (data: any) => {
     if (!user) return;
     const path = `users/${user.uid}`;
+    setProfile((prev: any) => ({ ...prev, ...data }));
     try {
       const docRef = doc(db, 'users', user.uid);
       await setDoc(docRef, { 
@@ -124,6 +125,7 @@ export default function App() {
         updatedAt: serverTimestamp() 
       }, { merge: true });
     } catch (err) {
+      console.error("Firestore update error:", err);
       handleFirestoreError(err, OperationType.UPDATE, path);
     }
   };
@@ -274,8 +276,21 @@ export default function App() {
               className="flex items-center gap-3 pl-4 border-l border-slate-200 hover:opacity-75 transition-opacity text-left"
             >
               <div className="text-right hidden sm:block">
-                <p className="text-xs font-bold text-slate-900 leading-none mb-1">{profile?.displayName || user.displayName || user.email?.split('@')[0] || 'Student'}</p>
-                <p className="text-[10px] text-slate-400 font-medium leading-none">Architect Profile</p>
+                <div className="flex items-center justify-end gap-1.5 mb-1">
+                  <p className="text-xs font-bold text-slate-900 leading-none">{profile?.displayName || user.displayName || user.email?.split('@')[0] || 'Student'}</p>
+                  {(user.emailVerified || profile?.isEmailVerified) ? (
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-emerald-100" title="Email Verified" />
+                  ) : (
+                    <span className="w-2 h-2 rounded-full bg-amber-500 ring-2 ring-amber-100" title="Email Unverified" />
+                  )}
+                </div>
+                <p className="text-[10px] font-bold leading-none">
+                  {(user.emailVerified || profile?.isEmailVerified) ? (
+                    <span className="text-emerald-600">✓ Verified</span>
+                  ) : (
+                    <span className="text-amber-600">⚠ Unverified</span>
+                  )}
+                </p>
               </div>
               <img 
                 src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || user.email || 'S'}&background=2563eb&color=fff`} 

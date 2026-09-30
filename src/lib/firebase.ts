@@ -6,6 +6,7 @@ import {
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
   sendPasswordResetEmail,
+  sendEmailVerification,
   browserLocalPersistence,
   setPersistence
 } from 'firebase/auth';
@@ -28,4 +29,4 @@ export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
-export { createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail };
+export { createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification };
