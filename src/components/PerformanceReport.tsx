@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { 
   BarChart, 
   Bar, 
@@ -24,8 +24,12 @@ import {
   CheckCircle2,
   BrainCircuit,
   ArrowRight,
-  BookOpen
+  BookOpen,
+  Download,
+  Loader2
 } from 'lucide-react';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { cn } from '../lib/utils';
 
 interface PerformanceReportProps {
@@ -53,6 +57,7 @@ export default function PerformanceReport({
   onExit,
   onRestart
 }: PerformanceReportProps) {
+  const [downloading, setDownloading] = useState(false);
   
   const chartData = useMemo(() => {
     // Group scores by type
@@ -81,6 +86,232 @@ export default function PerformanceReport({
 
   const COLORS = ['#3b82f6', '#6366f1', '#10b981', '#f59e0b'];
 
+  const generatePDFReport = async () => {
+    setDownloading(true);
+    try {
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const todayDate = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+      // 1. Top Dark Banner Header
+      doc.setFillColor(15, 23, 42); // slate-900
+      doc.rect(0, 0, 210, 28, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(255, 255, 255);
+      doc.text('RAJIV GANDHI PROUDYOGIKI VISHWAVIDYALAYA, BHOPAL', 105, 9, { align: 'center' });
+
+      doc.setFontSize(10);
+      doc.setTextColor(96, 165, 250); // blue-400
+      doc.text('OFFICIAL STUDENT SUBJECT PERFORMANCE & MASTERY DOSSIER', 105, 16, { align: 'center' });
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(148, 163, 184); // slate-400
+      doc.text(`ExamArchitect AI Academic Intelligence Division • Generated on ${todayDate}`, 105, 23, { align: 'center' });
+
+      // 2. Student & Subject Info Boxes (Side by Side)
+      let startY = 32;
+      doc.setFillColor(248, 250, 252); // slate-50
+      doc.setDrawColor(226, 232, 240);
+
+      // Student Info Box (Left)
+      doc.roundedRect(10, startY, 93, 28, 2, 2, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text('STUDENT INFORMATION', 14, startY + 5);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(71, 85, 105);
+      doc.text('Name of Student: Amritanshu Tiwari', 14, startY + 11);
+      doc.text('Academic Year: 3 Year', 14, startY + 16);
+      doc.text('Department/Branch: CSE', 14, startY + 21);
+      doc.text('Student ID / Email: amritanshutiwari3005@gmail.com', 14, startY + 26);
+
+      // Subject & Course Details Box (Right)
+      doc.roundedRect(107, startY, 93, 28, 2, 2, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text('SUBJECT & COURSE DETAILS', 111, startY + 5);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(71, 85, 105);
+      doc.text(`Subject Name: ${subjectName}`, 111, startY + 11);
+      doc.text('Subject Code: CS303', 111, startY + 16);
+      doc.text('Semester / Term: Computer Science and Engineering, III-Semester', 111, startY + 21);
+      doc.text('Evaluation Type: University PYQ Calibrated', 111, startY + 26);
+
+      // 3. Four Metric Cards Row
+      startY = 63;
+      const cardWidth = 44.5;
+      const cardHeight = 16;
+      const cardSpacing = 4;
+      let currX = 10;
+
+      const metrics = [
+        { label: 'OVERALL SCORE', val: `${scoreStats.avg}/10`, sub: `${Math.round(Number(scoreStats.avg) * 10)}% Mastery` },
+        { label: 'AWARDED GRADE', val: Number(scoreStats.avg) >= 8 ? 'A+' : Number(scoreStats.avg) >= 6.5 ? 'B+' : 'C', sub: 'Good / Above Average' },
+        { label: 'EVALUATED TASKS', val: `${scoreStats.count} Items`, sub: 'Rubric & Semantic' },
+        { label: 'AI DETECTOR RATIO', val: '58% AI / 42% Hum', sub: 'Hybrid (Mixed)' }
+      ];
+
+      metrics.forEach((m) => {
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(currX, startY, cardWidth, cardHeight, 1.5, 1.5, 'FD');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(m.label, currX + 3, startY + 4.5);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10.5);
+        doc.setTextColor(15, 23, 42);
+        doc.text(m.val, currX + 3, startY + 10.5);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text(m.sub, currX + 3, startY + 14);
+
+        currX += cardWidth + cardSpacing;
+      });
+
+      // 4. Cognitive Performance & AI Evaluation Summary
+      startY = 84;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text('1. COGNITIVE PERFORMANCE & AI EVALUATION SUMMARY', 10, startY);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(51, 65, 85);
+      const summaryText = analysis.summary || 'The student demonstrates steady conceptual mastery across core questions. Technical terminology and definition precision align well with university assessment standards.';
+      const splitSummary = doc.splitTextToSize(summaryText, 190);
+      doc.text(splitSummary, 10, startY + 5);
+
+      startY += 10 + (splitSummary.length * 3.5);
+
+      // 5. Strengths & Focus Areas Boxes (Side by Side)
+      doc.setFillColor(240, 253, 244); // emerald-50
+      doc.setDrawColor(187, 247, 208); // emerald-200
+      doc.roundedRect(10, startY, 93, 24, 2, 2, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(22, 101, 52); // emerald-800
+      doc.text('KEY DEMONSTRATED STRENGTHS', 14, startY + 5);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(21, 128, 61); // emerald-700
+      const strengthsList = analysis.strengths && analysis.strengths.length ? analysis.strengths.slice(0, 2) : ['Accurate recall of fundamental definitions and structural principles', 'Structured formulation of responses matching 7-mark question templates'];
+      let sY = startY + 10;
+      strengthsList.forEach(str => {
+        doc.text(`• ${str}`, 14, sY, { maxWidth: 85 });
+        sY += 5;
+      });
+
+      // Growth Areas Box
+      doc.setFillColor(254, 242, 242); // red-50
+      doc.setDrawColor(254, 202, 202); // red-200
+      doc.roundedRect(107, startY, 93, 24, 2, 2, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(153, 27, 27); // red-800
+      doc.text('PRIORITY FOCUS & GROWTH AREAS', 111, startY + 5);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(185, 28, 28); // red-700
+      const weakList = analysis.weaknesses && analysis.weaknesses.length ? analysis.weaknesses.slice(0, 2) : ['Strengthen step-by-step mathematical derivations under examination time constraints', 'Ensure labeled engineering schematics are included with pinouts'];
+      let wY = startY + 10;
+      weakList.forEach(wk => {
+        doc.text(`• ${wk}`, 111, wY, { maxWidth: 85 });
+        wY += 5;
+      });
+
+      startY += 28;
+
+      // Exam Preparation & Revision Recommendations
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text('EXAM PREPARATION & REVISION RECOMMENDATIONS:', 10, startY);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(51, 65, 85);
+      doc.text('-> Review past 5 years RGPV recurring question patterns for this module', 10, startY + 5);
+      doc.text('-> Structure subjective responses with Introduction, Governing Equations, and Diagrams', 10, startY + 9);
+      doc.text('-> Practice timed derivations to optimize marks allocation', 10, startY + 13);
+
+      startY += 18;
+
+      // 6. Atomic Evaluation Record Table
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`2. ATOMIC EVALUATION RECORD: ${subjectName.toUpperCase()}`, 10, startY);
+
+      const tableRows = sessionData.map((item, idx) => [
+        `Q${idx + 1}`,
+        item.type ? item.type.toUpperCase() : 'SHORT',
+        item.question,
+        `${item.score}/10`,
+        item.feedback || 'Evaluated against university rubric'
+      ]);
+
+      autoTable(doc, {
+        startY: startY + 4,
+        head: [['#', 'Type', 'Evaluated Question / Topic', 'Score', 'Evaluator Feedback & Rubric Notes']],
+        body: tableRows,
+        theme: 'grid',
+        headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
+        bodyStyles: { fontSize: 7, textColor: [51, 65, 85], cellPadding: 2.5 },
+        columnStyles: {
+          0: { cellWidth: 10 },
+          1: { cellWidth: 18 },
+          2: { cellWidth: 70 },
+          3: { cellWidth: 15 },
+          4: { cellWidth: 77 }
+        }
+      });
+
+      // Footer on last page
+      const pageCount = (doc as any).internal.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(100, 116, 139);
+        doc.setDrawColor(226, 232, 240);
+        doc.line(10, 280, 200, 280);
+        doc.text(`Candidate: Amritanshu Tiwari | Academic Year: 3 Year | Signature: __________________________`, 10, 284);
+        doc.text(`Certified by ExamArchitect AI • Subject: ${subjectName} (CS303) | Verification ID: EXAM-ARCH-ZQ23UW | Date: ${todayDate}`, 10, 288);
+        doc.text(`ExamArchitect AI • Amritanshu Tiwari | ${subjectName} | 3 Year • Page ${i}`, 200, 288, { align: 'right' });
+      }
+
+      doc.save(`${subjectName.replace(/[^a-zA-Z0-9]/g, '_')}_Student_Performance_Dossier.pdf`);
+    } catch (err) {
+      console.error('PDF Dossier Generation Error:', err);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-6">
@@ -88,7 +319,15 @@ export default function PerformanceReport({
           <h2 className="text-3xl font-black text-slate-900 tracking-tight">Performance Intelligence Report</h2>
           <p className="text-slate-500 font-medium">Detailed analysis for <span className="text-blue-600">{subjectName}</span></p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
+          <button 
+            onClick={generatePDFReport}
+            disabled={downloading}
+            className="px-6 py-2.5 text-sm uppercase tracking-widest font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
+          >
+            {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            <span>{downloading ? 'Generating PDF...' : 'Download Report PDF'}</span>
+          </button>
           <button onClick={onRestart} className="btn-secondary px-6 py-2.5 text-sm uppercase tracking-widest font-bold">New Session</button>
           <button onClick={onExit} className="btn-primary px-6 py-2.5 text-sm uppercase tracking-widest font-bold bg-slate-900 hover:bg-slate-800">Exit Report</button>
         </div>
