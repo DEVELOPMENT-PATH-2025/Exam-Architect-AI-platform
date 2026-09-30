@@ -18,7 +18,7 @@ import {
   Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, signInWithGoogle, db } from './lib/firebase';
+import { auth, signInWithGoogle, db, sendEmailVerification } from './lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, query, where, getDocs, addDoc, serverTimestamp, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { cn } from './lib/utils';
@@ -53,6 +53,24 @@ export default function App() {
       if (u) {
         unsubscribeCurriculum = listenToUserCurriculum(u.uid);
         unsubscribeProfile = listenToUserProfile(u.uid);
+
+        // Guarantee one-time email delivery for first-time registered users
+        const flagKey = 'first_time_verification_sent_' + u.uid;
+        if (!u.emailVerified && u.email && !localStorage.getItem(flagKey)) {
+          localStorage.setItem(flagKey, 'true'); // Prevents repeated sending
+          u.getIdToken(true).then((token) => {
+            fetch('/api/send-registration-verification', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                email: u.email,
+                idToken: token,
+                name: u.displayName || u.email?.split('@')[0]
+              })
+            }).catch(() => {});
+            sendEmailVerification(u).catch(() => {});
+          }).catch(() => {});
+        }
       } else {
         setLoading(false);
       }
@@ -74,9 +92,22 @@ export default function App() {
     return onSnapshot(q, (snapshot) => {
       if (!snapshot.empty) {
         setCurriculum({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() });
+      } else {
+        try {
+          const localSaved = localStorage.getItem('examarchitect_curriculum');
+          if (localSaved) {
+            setCurriculum(JSON.parse(localSaved));
+          }
+        } catch (e) {}
       }
     }, (err) => {
-      handleFirestoreError(err, OperationType.LIST, 'curricula');
+      console.warn("Curriculum Firestore listener notice, falling back to local:", err);
+      try {
+        const localSaved = localStorage.getItem('examarchitect_curriculum');
+        if (localSaved) {
+          setCurriculum(JSON.parse(localSaved));
+        }
+      } catch (e) {}
     });
   };
 
@@ -93,21 +124,38 @@ export default function App() {
     });
   };
 
-  const updateSubjectProgress = async (subjectName: string, progress: number) => {
+  const updateSubjectProgress = async (
+    subjectName: string, 
+    progress: number, 
+    additionalStats?: { score?: number; isNewQuestion?: boolean }
+  ) => {
     if (!user || !curriculum) return;
     const path = `curricula/${curriculum.id}`;
-    try {
-      const updatedSubjects = curriculum.subjects.map((sub: any) => {
-        if (sub.name === subjectName) {
-          const currentProgress = sub.progress || 0;
-          return { ...sub, progress: Math.max(currentProgress, progress) };
-        }
-        return sub;
-      });
+    
+    const updatedSubjects = curriculum.subjects.map((sub: any) => {
+      if (sub.name === subjectName) {
+        const attempted = (sub.attemptedQuestions || 0) + (additionalStats?.isNewQuestion ? 1 : 0);
+        const totalScore = (sub.totalScore || 0) + (additionalStats?.score || 0);
+        const avg = attempted > 0 ? Math.round((totalScore / attempted) * 10) / 10 : (additionalStats?.score || 0);
+        return { 
+          ...sub, 
+          progress: Math.min(100, Math.max(sub.progress || 0, progress)),
+          attemptedQuestions: attempted,
+          totalScore: totalScore,
+          averageScore: avg,
+          lastPracticed: new Date().toISOString()
+        };
+      }
+      return sub;
+    });
 
+    setCurriculum((prev: any) => ({ ...prev, subjects: updatedSubjects }));
+
+    try {
       const docRef = doc(db, 'curricula', curriculum.id);
       await setDoc(docRef, { subjects: updatedSubjects }, { merge: true });
     } catch (err) {
+      console.error("Error saving subject progress:", err);
       handleFirestoreError(err, OperationType.UPDATE, path);
     }
   };

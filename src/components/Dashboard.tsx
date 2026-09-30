@@ -24,7 +24,8 @@ import {
   FileCheck2,
   ShieldCheck,
   Zap,
-  CheckCircle2
+  CheckCircle2,
+  Cpu
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -172,23 +173,46 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
 
           <div className="divide-y divide-slate-100">
             {subjects.map((sub: any, idx: number) => {
-              const prog = sub.progress || (idx === 0 ? 59 : idx === 1 ? 90 : idx === 2 ? 20 : 60);
+              const prog = typeof sub.progress === 'number' ? Math.round(sub.progress) : 0;
+              const attempted = sub.attemptedQuestions || 0;
+              const avgScore = sub.averageScore ? `${sub.averageScore}/10 avg` : null;
               return (
                 <div 
                   key={sub.code || idx}
                   className="p-5 hover:bg-slate-50/80 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                 >
                   <div className="space-y-1 flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
                         {sub.code || `SUB-${idx + 1}`}
                       </span>
                       <h3 className="text-sm font-black text-slate-900 truncate">
                         {sub.name}
                       </h3>
+                      {prog === 0 ? (
+                        <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] font-bold uppercase tracking-wider">
+                          Ready to Start
+                        </span>
+                      ) : prog >= 80 ? (
+                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded text-[9px] font-bold uppercase tracking-wider">
+                          Exam Ready
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-[9px] font-bold uppercase tracking-wider">
+                          In Progress
+                        </span>
+                      )}
                     </div>
-                    <p className="text-xs text-slate-400 truncate">
-                      {sub.topics ? `${sub.topics.length} Units Mapped • ${sub.topics.slice(0, 2).join(', ')}...` : 'Comprehensive Exam Practice'}
+                    <p className="text-xs text-slate-400 truncate flex items-center gap-2">
+                      <span>{sub.topics ? `${sub.topics.length} Units Mapped` : 'Comprehensive Exam Practice'}</span>
+                      <span>•</span>
+                      <span className="font-medium text-slate-600">{attempted} questions evaluated</span>
+                      {avgScore && (
+                        <>
+                          <span>•</span>
+                          <span className="text-emerald-600 font-bold">{avgScore}</span>
+                        </>
+                      )}
                     </p>
                   </div>
 
@@ -199,12 +223,12 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
                         <div 
                           className={cn(
                             "h-full rounded-full transition-all duration-700",
-                            prog >= 75 ? "bg-emerald-500" : prog >= 40 ? "bg-blue-600" : "bg-amber-500"
+                            prog >= 75 ? "bg-emerald-500" : prog >= 40 ? "bg-blue-600" : prog > 0 ? "bg-amber-500" : "bg-slate-200"
                           )}
-                          style={{ width: `${prog}%` }}
+                          style={{ width: `${Math.max(prog, prog === 0 ? 0 : 4)}%` }}
                         />
                       </div>
-                      <span className="font-mono text-xs font-bold text-slate-600 w-8 text-right">
+                      <span className="font-mono text-xs font-bold text-slate-600 w-9 text-right">
                         {prog}%
                       </span>
                     </div>
@@ -213,7 +237,7 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
                       onClick={() => onStartPractice(sub)}
                       className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-sm transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
                     >
-                      <span>Start</span>
+                      <span>{attempted > 0 ? "Continue" : "Start"}</span>
                       <ArrowRight className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -315,6 +339,17 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
 
           {/* Feature 3 */}
           <div className="p-6 bg-slate-50/80 rounded-2xl border border-slate-200/70 hover:border-blue-300 hover:bg-white transition-all space-y-3 group">
+            <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center shadow-md shadow-purple-500/20 group-hover:scale-105 transition-transform">
+              <Cpu className="w-5 h-5" />
+            </div>
+            <h3 className="text-sm font-black text-slate-900">AI Answer Predictor (% Ratio)</h3>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Analyzes answers to predict whether they are AI-generated or human-written with exact percentage split (e.g. 85% AI : 15% Human) and burstiness metrics.
+            </p>
+          </div>
+
+          {/* Feature 4 */}
+          <div className="p-6 bg-slate-50/80 rounded-2xl border border-slate-200/70 hover:border-blue-300 hover:bg-white transition-all space-y-3 group">
             <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform">
               <Award className="w-5 h-5" />
             </div>
@@ -324,7 +359,7 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
             </p>
           </div>
 
-          {/* Feature 4 */}
+          {/* Feature 5 */}
           <div className="p-6 bg-slate-50/80 rounded-2xl border border-slate-200/70 hover:border-blue-300 hover:bg-white transition-all space-y-3 group">
             <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20 group-hover:scale-105 transition-transform">
               <Star className="w-5 h-5 fill-white" />
@@ -335,25 +370,14 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
             </p>
           </div>
 
-          {/* Feature 5 */}
-          <div className="p-6 bg-slate-50/80 rounded-2xl border border-slate-200/70 hover:border-blue-300 hover:bg-white transition-all space-y-3 group">
-            <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center shadow-md shadow-purple-500/20 group-hover:scale-105 transition-transform">
-              <Target className="w-5 h-5" />
-            </div>
-            <h3 className="text-sm font-black text-slate-900">Weak Area Diagnostics</h3>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Pinpoints units below 50% mastery, routing you straight to high-priority practice modules before end-term finals.
-            </p>
-          </div>
-
           {/* Feature 6 */}
           <div className="p-6 bg-slate-50/80 rounded-2xl border border-slate-200/70 hover:border-blue-300 hover:bg-white transition-all space-y-3 group">
             <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center shadow-md shadow-slate-900/20 group-hover:scale-105 transition-transform">
               <FileCheck2 className="w-5 h-5" />
             </div>
-            <h3 className="text-sm font-black text-slate-900">Printable Exam Papers</h3>
+            <h3 className="text-sm font-black text-slate-900">Real-Time Progress Intelligence</h3>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Instantly download vector PDF mock test papers formatted to match your university&apos;s exact marks distribution.
+              Genuine live subject tracking based on evaluated questions, average scores, and weak-area identification without dummy data.
             </p>
           </div>
         </div>

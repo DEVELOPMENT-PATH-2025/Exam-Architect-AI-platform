@@ -17,8 +17,8 @@ import {
   Calendar
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, db } from '../lib/firebase';
-import { updateProfile } from 'firebase/auth';
+import { auth, signInWithGoogle, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, db, firebaseConfig } from '../lib/firebase';
+import { updateProfile, getAdditionalUserInfo, sendEmailVerification } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { cn } from '../lib/utils';
 import { handleFirestoreError, OperationType } from '../lib/firestoreUtils';
@@ -42,6 +42,9 @@ export default function AuthUI({ onBack }: { onBack: () => void }) {
       const userCredential = await signInWithGoogle();
       const user = userCredential.user;
       
+      const additionalInfo = getAdditionalUserInfo(userCredential);
+      const isNewUser = Boolean(additionalInfo?.isNewUser || user.metadata.creationTime === user.metadata.lastSignInTime);
+
       // Ensure the users document exists with basic info
       const profilePath = `users/${user.uid}`;
       try {
@@ -54,6 +57,24 @@ export default function AuthUI({ onBack }: { onBack: () => void }) {
         }, { merge: true });
       } catch (dbErr) {
         handleFirestoreError(dbErr, OperationType.WRITE, profilePath);
+      }
+
+      // Automatically dispatch welcome onboarding email for first-time registration
+      if (isNewUser && user.email) {
+        try {
+          await fetch('/api/send-welcome-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: user.email,
+              name: user.displayName || user.email.split('@')[0],
+              department: 'Academic Studies',
+              year: 'Semester III'
+            })
+          });
+        } catch (mailErr) {
+          console.warn("Welcome email notice:", mailErr);
+        }
       }
     } catch (err: any) {
       setError(err.message || String(err));
@@ -75,7 +96,39 @@ export default function AuthUI({ onBack }: { onBack: () => void }) {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
-        await updateProfile(user, { displayName: name });
+        // 1. Immediately send verification email FIRST for first-time registration
+        try {
+          const idToken = await user.getIdToken(true);
+          localStorage.setItem('first_time_verification_sent_' + user.uid, 'true');
+          
+          await Promise.allSettled([
+            sendEmailVerification(user),
+            fetch('/api/send-registration-verification', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                email: user.email,
+                idToken,
+                name: name || user.email?.split('@')[0]
+              })
+            }),
+            fetch('/api/send-welcome-email', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                email,
+                name: name || email.split('@')[0],
+                department: department || 'Engineering',
+                year: year || 'Semester III'
+              })
+            })
+          ]);
+        } catch (verifyErr) {
+          console.warn("First-time email verification error:", verifyErr);
+        }
+
+        // 2. Update user profile and Firestore document
+        await updateProfile(user, { displayName: name }).catch(() => {});
         
         const path = `users/${user.uid}`;
         try {
@@ -90,6 +143,8 @@ export default function AuthUI({ onBack }: { onBack: () => void }) {
         } catch (dbErr) {
           handleFirestoreError(dbErr, OperationType.WRITE, path);
         }
+
+        setSuccess(`Registration successful! Verification mail has been sent automatically to ${email}. Please check your inbox or spam folder.`);
       } else {
         await sendPasswordResetEmail(auth, email);
         setSuccess('Password reset email sent. Check your inbox.');

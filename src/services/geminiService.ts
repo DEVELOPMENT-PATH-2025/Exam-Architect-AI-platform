@@ -69,6 +69,21 @@ export const evaluatorAgent = async (
   return await response.json();
 };
 
+export const predictAiContentAgent = async (text: string, question: string = "") => {
+  const response = await fetch("/api/gemini/predict-ai-content", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, question }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `AI prediction failed: ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
 export const questionBankAgent = async (
   subject: string,
   topic: string,

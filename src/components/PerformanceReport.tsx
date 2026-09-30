@@ -122,6 +122,39 @@ export default function PerformanceReport({
             </p>
           </motion.div>
 
+          {/* AI vs Human Session Ratio Summary */}
+          {(() => {
+            const withPred = sessionData.filter((d: any) => d.aiPrediction);
+            if (!withPred.length) return null;
+            const avgAi = Math.round(
+              withPred.reduce((acc, curr: any) => acc + (curr.aiPrediction?.aiPercentage || 0), 0) / withPred.length
+            );
+            const avgHuman = 100 - avgAi;
+            return (
+              <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white p-6 rounded-2xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    Session AI vs Human Ratio
+                  </span>
+                  <span className="text-[10px] font-mono text-purple-300 font-bold">
+                    {avgAi}% AI : {avgHuman}% Human
+                  </span>
+                </div>
+                <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden flex">
+                  <div className="h-full bg-purple-500" style={{ width: `${avgAi}%` }} />
+                  <div className="h-full bg-emerald-500" style={{ width: `${avgHuman}%` }} />
+                </div>
+                <p className="text-[11px] text-slate-300">
+                  {avgHuman >= 65 
+                    ? "✓ High Human Authenticity: Your answers demonstrate natural human reasoning and syntax variations."
+                    : avgAi >= 65
+                    ? "⚠ High AI Similarity: Significant portion of your answers matches formulaic LLM token patterns."
+                    : "⚡ Mixed Style: Hybrid blend of authentic student phrasing with AI assistance."}
+                </p>
+              </div>
+            );
+          })()}
+
           <div className="grid grid-cols-1 gap-4">
             <div className="bg-emerald-50 border border-emerald-100 p-6 rounded-2xl">
               <div className="flex items-center gap-3 mb-4">
