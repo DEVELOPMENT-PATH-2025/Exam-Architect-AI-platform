@@ -139,6 +139,7 @@ async function startServer() {
 
       const prompt = `You are a world-class academic curriculum and syllabus extraction engine.
 Extract the exact university syllabus, course titles, course codes, semester/year, and complete unit-by-unit syllabus topics from this document.
+Ensure you extract exactly all 5 core subjects present in the semester curriculum (e.g. 5 primary theory and practical courses as per standard university guidelines).
 Output must be a valid JSON object matching the requested schema.`;
 
       const parts: any[] = [];
@@ -200,6 +201,17 @@ Output must be a valid JSON object matching the requested schema.`;
         universityName: "Rajiv Gandhi Proudyogiki Vishwavidyalaya, Bhopal",
         semester: "Semester III",
         subjects: [
+          {
+            name: "Energy & Environment Engineering",
+            code: "ES-301",
+            topics: [
+              "Unit 1: Energy Resources, Renewable & Non-Renewable Systems",
+              "Unit 2: Ecosystem Dynamics, Biodiversity & Ecological Balance",
+              "Unit 3: Environmental Pollution: Air, Water, Soil & Noise Control",
+              "Unit 4: Social Issues, Sustainable Development & Environmental Acts",
+              "Unit 5: Human Population, Waste Management & Green Technologies"
+            ]
+          },
           {
             name: "Data Structure",
             code: "CS-303",

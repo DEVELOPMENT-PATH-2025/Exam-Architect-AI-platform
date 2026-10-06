@@ -15,7 +15,9 @@ import {
   BrainCircuit,
   LogOut,
   PenTool,
-  Download
+  Download,
+  Menu,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, signInWithGoogle, db, sendEmailVerification } from './lib/firebase';
@@ -43,6 +45,7 @@ export default function App() {
   const [curriculum, setCurriculum] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     let unsubscribeCurriculum: (() => void) | null = null;
@@ -224,91 +227,129 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden font-sans">
-      {/* Sidebar - Professional Polish Style */}
-      <aside className="w-64 bg-slate-900 flex flex-col border-r border-slate-800 text-slate-400">
-        <div className="p-6 flex items-center gap-3 border-b border-slate-800">
-          <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center">
-            <BrainCircuit className="h-5 w-5 text-white" />
-          </div>
-          <span className="text-white font-bold tracking-tight text-lg">ExamArchitect</span>
-        </div>
+    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden font-sans relative">
+      {/* Sidebar Slide-Out Drawer */}
+      <AnimatePresence>
+        {sidebarOpen && (
+          <>
+            {/* Backdrop Overlay */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.5 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSidebarOpen(false)}
+              className="fixed inset-0 bg-slate-900/60 z-40 backdrop-blur-xs"
+            />
+            {/* Popup Drawer */}
+            <motion.aside 
+              initial={{ x: -280 }}
+              animate={{ x: 0 }}
+              exit={{ x: -280 }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 left-0 w-72 bg-slate-900 flex flex-col border-r border-slate-800 text-slate-400 z-50 shadow-2xl"
+            >
+              <div className="p-6 flex items-center justify-between border-b border-slate-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center">
+                    <BrainCircuit className="h-5 w-5 text-white" />
+                  </div>
+                  <span className="text-white font-bold tracking-tight text-lg">ExamArchitect</span>
+                </div>
+                <button 
+                  onClick={() => setSidebarOpen(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
-        <nav className="flex-1 py-6 px-4 space-y-1">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-2">Academic Workspace</div>
-          <NavItem 
-            icon={<Layout className="w-4 h-4" />} 
-            label="Dashboard" 
-            active={activeTab === 'dashboard'} 
-            onClick={() => setActiveTab('dashboard')} 
-          />
-          <NavItem 
-            icon={<BookOpen className="w-4 h-4" />} 
-            label="My Syllabus" 
-            active={activeTab === 'upload'} 
-            onClick={() => setActiveTab('upload')} 
-          />
-          <NavItem 
-            icon={<BrainCircuit className="w-4 h-4" />} 
-            label="Practice Studio" 
-            active={activeTab === 'practice'} 
-            disabled={!curriculum}
-            onClick={() => setActiveTab('practice')} 
-          />
-          
-          <div className="pt-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-2">Resources</div>
-          <NavItem 
-            icon={<FileText className="w-4 h-4" />} 
-            label="500+ Boost Questions" 
-            active={activeTab === 'mock'} 
-            disabled={!curriculum}
-            onClick={() => setActiveTab('mock')} 
-          />
-        </nav>
+              <nav className="flex-1 py-6 px-4 space-y-1 overflow-y-auto">
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-2">Academic Workspace</div>
+                <NavItem 
+                  icon={<Layout className="w-4 h-4" />} 
+                  label="Dashboard" 
+                  active={activeTab === 'dashboard'} 
+                  onClick={() => { setActiveTab('dashboard'); setSidebarOpen(false); }} 
+                />
+                <NavItem 
+                  icon={<BookOpen className="w-4 h-4" />} 
+                  label="My Syllabus" 
+                  active={activeTab === 'upload'} 
+                  onClick={() => { setActiveTab('upload'); setSidebarOpen(false); }} 
+                />
+                <NavItem 
+                  icon={<BrainCircuit className="w-4 h-4" />} 
+                  label="Practice Studio" 
+                  active={activeTab === 'practice'} 
+                  disabled={!curriculum}
+                  onClick={() => { setActiveTab('practice'); setSidebarOpen(false); }} 
+                />
+                
+                <div className="pt-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-2">Resources</div>
+                <NavItem 
+                  icon={<FileText className="w-4 h-4" />} 
+                  label="500+ Boost Questions" 
+                  active={activeTab === 'mock'} 
+                  disabled={!curriculum}
+                  onClick={() => { setActiveTab('mock'); setSidebarOpen(false); }} 
+                />
+              </nav>
 
-        <div className="p-4 mt-auto">
-          <div className="bg-slate-800 rounded-2xl p-4 mb-4 border border-slate-700/50 shadow-inner">
-            <div className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 opacity-70">Syllabus Status</div>
-            <div className="text-white text-sm font-bold mb-3">{curriculum ? 'Active Curriculum' : 'Awaiting Data'}</div>
-            
-            {curriculum && (
-              <button 
-                onClick={() => setActiveTab('upload')}
-                className="w-full flex items-center justify-center gap-2 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase tracking-tighter rounded-xl transition-all shadow-lg shadow-blue-900/40 active:scale-95 group"
-              >
-                <Upload className="w-3.5 h-3.5 group-hover:-translate-y-0.5 transition-transform" />
-                Next Curriculum
-              </button>
-            )}
-          </div>
-          
-          <button 
-            onClick={() => signOut(auth)}
-            className="flex w-full items-center gap-3 px-3 py-2 text-sm text-slate-400 transition-colors hover:text-white"
-          >
-            <LogOut className="h-4 w-4" />
-            <span>Sign Out</span>
-          </button>
-        </div>
-      </aside>
+              <div className="p-4 mt-auto">
+                <div className="bg-slate-800 rounded-2xl p-4 mb-4 border border-slate-700/50 shadow-inner">
+                  <div className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2 opacity-70">Syllabus Status</div>
+                  <div className="text-white text-sm font-bold mb-3">{curriculum ? 'Active Curriculum' : 'Awaiting Data'}</div>
+                  
+                  {curriculum && (
+                    <button 
+                      onClick={() => { setActiveTab('upload'); setSidebarOpen(false); }}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase tracking-tighter rounded-xl transition-all shadow-lg shadow-blue-900/40 active:scale-95 group cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5 group-hover:-translate-y-0.5 transition-transform" />
+                      Next Curriculum
+                    </button>
+                  )}
+                </div>
+                
+                <button 
+                  onClick={() => signOut(auth)}
+                  className="flex w-full items-center gap-3 px-3 py-2 text-sm text-slate-400 transition-colors hover:text-white cursor-pointer"
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8">
-          <div className="flex items-center gap-4 text-[11px] font-bold uppercase tracking-widest">
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Univ:</span>
-              <span className="text-slate-900">{curriculum?.universityName || 'Not Set'}</span>
-            </div>
-            <span className="text-slate-200">|</span>
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Dept:</span>
-              <span className="text-blue-600">{profile?.department || 'Set in Profile'}</span>
-            </div>
-            <span className="text-slate-200">|</span>
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Year:</span>
-              <span className="text-slate-900">{profile?.year || 'N/A'}</span>
+      <main className="flex-1 flex flex-col overflow-hidden w-full">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 sm:px-8">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="p-2 rounded-xl text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer flex items-center gap-2 font-bold text-xs uppercase tracking-wider"
+              title="Open Menu"
+            >
+              <Menu className="w-6 h-6 text-slate-900" />
+            </button>
+            <div className="hidden md:flex items-center gap-4 text-[11px] font-bold uppercase tracking-widest border-l border-slate-200 pl-4">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400">Univ:</span>
+                <span className="text-slate-900">{curriculum?.universityName || 'Not Set'}</span>
+              </div>
+              <span className="text-slate-200">|</span>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400">Dept:</span>
+                <span className="text-blue-600">{profile?.department || 'Set in Profile'}</span>
+              </div>
+              <span className="text-slate-200">|</span>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400">Year:</span>
+                <span className="text-slate-900">{profile?.year || 'N/A'}</span>
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-4">

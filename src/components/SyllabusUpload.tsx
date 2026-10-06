@@ -105,7 +105,7 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
       const base64 = await toBase64(selectedFile);
 
       // 2. Call parsing API
-      const data = await syllabusParsingAgent(base64);
+      const data = await syllabusParsingAgent(base64, selectedFile.name);
 
       // Advance to 92%
       setProgress(92);
