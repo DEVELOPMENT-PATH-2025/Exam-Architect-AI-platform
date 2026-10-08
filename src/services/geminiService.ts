@@ -23,7 +23,7 @@ export const questionArchitectAgent = async (
   subject: string,
   topics: string[],
   pattern: string = "Standard University Pattern",
-  questionType: 'short' | 'long' | 'numerical' | 'diagram'
+  questionType: 'short' | 'long' | 'numerical' | 'mcq'
 ) => {
   const response = await fetch("/api/gemini/architect-questions", {
     method: "POST",

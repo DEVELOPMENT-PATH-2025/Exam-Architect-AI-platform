@@ -34,6 +34,7 @@ export default function AuthUI({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [failedAttempts, setFailedAttempts] = useState(0);
 
   const handleGoogleSignIn = async () => {
     setLoading(true);
@@ -150,6 +151,9 @@ export default function AuthUI({ onBack }: { onBack: () => void }) {
         setSuccess('Password reset email sent. Check your inbox.');
       }
     } catch (err: any) {
+      if (mode === 'login') {
+        setFailedAttempts(prev => prev + 1);
+      }
       setError(err.message || String(err));
     } finally {
       setLoading(false);
@@ -371,9 +375,24 @@ export default function AuthUI({ onBack }: { onBack: () => void }) {
             )}
 
             {error && (
-              <div className="rounded-lg bg-red-50 p-3 text-xs font-bold text-red-600 border border-red-100 flex items-center gap-2">
-                <div className="w-1 h-1 rounded-full bg-red-500" />
-                {error}
+              <div className="rounded-lg bg-red-50 p-3 text-xs font-bold text-red-600 border border-red-100 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                  <span>{error}</span>
+                </div>
+                {failedAttempts >= 2 && mode === 'login' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('forgot');
+                      setError(null);
+                      setSuccess(null);
+                    }}
+                    className="text-left text-[11px] font-extrabold text-blue-600 hover:underline uppercase tracking-wider"
+                  >
+                    → Multiple failed login attempts. Click here to reset your password.
+                  </button>
+                )}
               </div>
             )}
 

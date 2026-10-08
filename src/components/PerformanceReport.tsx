@@ -121,6 +121,8 @@ export default function PerformanceReport({
       doc.setDrawColor(226, 232, 240);
 
       // Student Info Box (Left)
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(203, 213, 225);
       doc.roundedRect(10, startY, 93, 28, 2, 2, 'FD');
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
@@ -129,13 +131,15 @@ export default function PerformanceReport({
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
-      doc.setTextColor(71, 85, 105);
+      doc.setTextColor(51, 65, 85);
       doc.text('Name of Student: Amritanshu Tiwari', 14, startY + 11);
       doc.text('Academic Year: 3 Year', 14, startY + 16);
       doc.text('Department/Branch: CSE', 14, startY + 21);
       doc.text('Student ID / Email: amritanshutiwari3005@gmail.com', 14, startY + 26);
 
       // Subject & Course Details Box (Right)
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(203, 213, 225);
       doc.roundedRect(107, startY, 93, 28, 2, 2, 'FD');
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
@@ -144,7 +148,7 @@ export default function PerformanceReport({
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
-      doc.setTextColor(71, 85, 105);
+      doc.setTextColor(51, 65, 85);
       doc.text(`Subject Name: ${subjectName}`, 111, startY + 11);
       doc.text('Subject Code: CS303', 111, startY + 16);
       doc.text('Semester / Term: Computer Science and Engineering, III-Semester', 111, startY + 21);

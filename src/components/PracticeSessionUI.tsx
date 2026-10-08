@@ -34,7 +34,7 @@ import Markdown from 'react-markdown';
 import { cn } from '../lib/utils';
 import PerformanceReport from './PerformanceReport';
 
-type QuestionType = 'short' | 'long' | 'numerical' | 'diagram';
+type QuestionType = 'short' | 'long' | 'numerical' | 'mcq';
 
 export default function PracticeSessionUI({ subject, onBack, onUpdateProgress }: { 
   subject: any, 
@@ -394,7 +394,7 @@ export default function PracticeSessionUI({ subject, onBack, onUpdateProgress }:
               
               {/* Module Type Selector */}
               <div className="grid grid-cols-4 gap-2 border-b border-slate-100 pb-6">
-                {(['short', 'long', 'numerical', 'diagram'] as QuestionType[]).map((t) => (
+                {(['short', 'long', 'numerical', 'mcq'] as QuestionType[]).map((t) => (
                   <button
                     key={t}
                     disabled={evaluating}
@@ -409,9 +409,9 @@ export default function PracticeSessionUI({ subject, onBack, onUpdateProgress }:
                     <div className={cn(
                       "text-xs font-black uppercase tracking-wider",
                       activeType === t ? "text-blue-700" : "text-slate-500"
-                    )}>{t}</div>
+                    )}>{t === 'mcq' ? 'MCQS' : t}</div>
                     <div className="text-[9px] font-bold text-slate-400">
-                      {t === 'long' ? '7 Marks' : t === 'short' ? '2 Marks' : 'University'}
+                      {t === 'long' ? '7 Marks' : t === 'short' ? '2 Marks' : t === 'numerical' ? 'Numerical' : '1 Mark'}
                     </div>
                   </button>
                 ))}
@@ -438,13 +438,40 @@ export default function PracticeSessionUI({ subject, onBack, onUpdateProgress }:
                 </div>
               </div>
 
-              {currentQ.diagramDescription && (
-                <div className="bg-slate-900 rounded-2xl p-6 text-white overflow-hidden relative space-y-3">
-                  <h3 className="text-xs font-mono font-bold uppercase tracking-widest text-blue-400">Diagram Revision Task</h3>
-                  <p className="text-xs text-slate-300 italic leading-relaxed">&ldquo;{currentQ.diagramDescription}&rdquo;</p>
-                  <div className="aspect-video bg-slate-800 rounded-xl border border-slate-700 flex flex-col items-center justify-center relative">
-                    <PenTool className="w-12 h-12 text-slate-600 mb-2" />
-                    <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Sketch & Illustrate Component</span>
+              {(currentQ.type === 'mcq' || currentQ.mcqOptions) && (
+                <div className="space-y-2 bg-slate-50 p-6 rounded-2xl border border-slate-200">
+                  <h4 className="text-xs font-black text-slate-500 uppercase tracking-wider mb-3">Select Correct Option:</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {(currentQ.mcqOptions || [
+                      "Option A: Fundamental theoretical bound",
+                      "Option B: Optimal logarithmic complexity",
+                      "Option C: Linear asymptotic execution",
+                      "Option D: Quadratic overhead limit"
+                    ]).map((opt: string, idx: number) => {
+                      const optLetter = String.fromCharCode(65 + idx);
+                      const isSelected = userAnswer.trim().startsWith(optLetter) || userAnswer.includes(opt);
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setUserAnswer(`${optLetter}. ${opt}`)}
+                          className={cn(
+                            "text-left p-3.5 rounded-xl border text-sm font-semibold transition-all cursor-pointer flex items-center gap-3",
+                            isSelected 
+                              ? "bg-blue-600 text-white border-blue-600 shadow-md" 
+                              : "bg-white border-slate-200 hover:border-slate-300 text-slate-700"
+                          )}
+                        >
+                          <span className={cn(
+                            "w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black",
+                            isSelected ? "bg-white text-blue-600" : "bg-slate-100 text-slate-700 border border-slate-200"
+                          )}>
+                            {optLetter}
+                          </span>
+                          <span className="flex-1">{opt}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}

@@ -4,12 +4,12 @@
 
 export interface Question {
   id: string;
-  type: 'short' | 'long' | 'numerical' | 'diagram';
+  type: 'short' | 'long' | 'numerical' | 'mcq';
   text: string;
   marks: number;
   modelAnswer: string;
   keywords: string[];
-  diagramDescription?: string;
+  mcqOptions?: string[];
   subjectId: string;
 }
 
