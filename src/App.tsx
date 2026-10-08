@@ -94,7 +94,13 @@ export default function App() {
     const q = query(collection(db, 'curricula'), where('userId', '==', uid));
     return onSnapshot(q, (snapshot) => {
       if (!snapshot.empty) {
-        setCurriculum({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() });
+        const allCurricula = snapshot.docs.map(d => ({ id: d.id, ...d.data() as any }));
+        allCurricula.sort((a, b) => {
+          const timeA = typeof a.createdAt === 'number' ? a.createdAt : a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+          const timeB = typeof b.createdAt === 'number' ? b.createdAt : b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+          return timeB - timeA;
+        });
+        setCurriculum(allCurricula[0]);
       } else {
         try {
           const localSaved = localStorage.getItem('examarchitect_curriculum');
