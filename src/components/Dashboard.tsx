@@ -57,7 +57,7 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
           className="px-6 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl shadow-lg shadow-blue-500/20 transition-all flex items-center gap-2 cursor-pointer text-sm"
         >
           <Upload className="w-4 h-4" />
-          Upload University Syllabus PDF
+          Upload Syllabus PDF or Screenshot
         </button>
       </div>
     );

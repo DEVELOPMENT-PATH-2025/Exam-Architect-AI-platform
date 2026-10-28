@@ -1,10 +1,10 @@
 import { Question, Subject } from "../types";
 
-export const syllabusParsingAgent = async (pdfBase64: string, fileName?: string) => {
+export const syllabusParsingAgent = async (pdfBase64: string, fileName?: string, mimeType?: string) => {
   const response = await fetch("/api/gemini/parse-syllabus", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pdfBase64, fileName }),
+    body: JSON.stringify({ pdfBase64, fileName, mimeType }),
   });
 
   if (!response.ok) {

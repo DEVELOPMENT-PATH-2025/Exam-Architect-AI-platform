@@ -10,7 +10,10 @@ import {
   Layers,
   ArrowRight,
   ShieldCheck,
-  FileText
+  FileText,
+  Image as ImageIcon,
+  Clipboard,
+  Camera
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { syllabusParsingAgent } from '../services/geminiService';
@@ -21,6 +24,7 @@ import { cn } from '../lib/utils';
 
 export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum: any) => void }) {
   const [file, setFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
@@ -29,12 +33,36 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
   const fileInputRef = useRef<HTMLInputElement>(null);
   const progressTimerRef = useRef<any>(null);
 
-  // Clean up timer on unmount
+  // Clean up timer and object URL on unmount
   useEffect(() => {
     return () => {
       if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
     };
-  }, []);
+  }, [imagePreview]);
+
+  // Support direct screenshot pasting with Ctrl+V / Cmd+V
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (extracting) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith('image/')) {
+          const blob = item.getAsFile();
+          if (blob) {
+            const pastedFile = new File([blob], `syllabus_screenshot_${Date.now()}.png`, { type: blob.type });
+            startImmediateExtraction(pastedFile);
+            break;
+          }
+        }
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [extracting]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -52,10 +80,12 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
     setDragActive(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const f = e.dataTransfer.files[0];
-      if (f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')) {
+      const isPdf = f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
+      const isImage = f.type.startsWith('image/') || Boolean(f.name.toLowerCase().match(/\.(png|jpe?g|webp|gif)$/i));
+      if (isPdf || isImage) {
         startImmediateExtraction(f);
       } else {
-        setError("Please upload a valid university syllabus PDF file.");
+        setError("Please upload a valid syllabus PDF or screenshot image (PNG, JPG, WebP).");
       }
     }
   };
@@ -76,18 +106,33 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
 
   // Start extraction IMMEDIATELY upon file select/drop with smooth progress percentage
   const startImmediateExtraction = async (selectedFile: File) => {
+    const isImage = selectedFile.type.startsWith('image/') || Boolean(selectedFile.name.toLowerCase().match(/\.(png|jpe?g|webp|gif)$/i));
+    if (isImage) {
+      try {
+        setImagePreview(URL.createObjectURL(selectedFile));
+      } catch (e) {
+        console.warn("Could not generate image preview:", e);
+      }
+    } else {
+      setImagePreview(null);
+    }
+
     setFile(selectedFile);
     setExtracting(true);
     setError(null);
     setProgress(10);
-    setStatusMessage('Reading syllabus PDF stream & initializing OCR...');
+    setStatusMessage(isImage 
+      ? 'Scanning syllabus screenshot & running OCR vision...' 
+      : 'Reading syllabus PDF stream & initializing OCR...');
 
     // Progress simulation while model parses
     if (progressTimerRef.current) clearInterval(progressTimerRef.current);
     progressTimerRef.current = setInterval(() => {
       setProgress((prev) => {
         if (prev < 30) {
-          setStatusMessage('Analyzing university course schemes & semester codes...');
+          setStatusMessage(isImage 
+            ? 'Analyzing course titles, codes & unit modules in screenshot...' 
+            : 'Analyzing university course schemes & semester codes...');
           return prev + 5;
         } else if (prev < 65) {
           setStatusMessage('Decomposing course units, modules & exam theorems...');
@@ -104,8 +149,9 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
       // 1. Read base64
       const base64 = await toBase64(selectedFile);
 
-      // 2. Call parsing API
-      const data = await syllabusParsingAgent(base64, selectedFile.name);
+      // 2. Call parsing API with detected mimeType
+      const detectedMime = selectedFile.type || (isImage ? 'image/png' : 'application/pdf');
+      const data = await syllabusParsingAgent(base64, selectedFile.name, detectedMime);
 
       // Advance to 92%
       setProgress(92);
@@ -166,7 +212,7 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
       setError(
         err?.message?.includes("network") 
           ? "Network connection interrupted. Please try uploading again." 
-          : "Unable to read syllabus PDF. Please verify the file is a readable document."
+          : "Unable to read syllabus file. Please verify the PDF or screenshot image is legible."
       );
     }
   };
@@ -184,7 +230,7 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
           Map Your Academic Curriculum
         </h2>
         <p className="text-slate-500 text-sm max-w-md mx-auto">
-          Upload your semester syllabus PDF. The engine decomposes courses into exact units, exam theorems, and 7-mark practice modules immediately.
+          Upload your semester syllabus PDF or drop a screenshot of any subject syllabus. The engine decomposes courses into exact units, exam theorems, and practice modules immediately.
         </p>
       </div>
 
@@ -200,7 +246,7 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
             className={cn(
-              "relative flex min-h-[260px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed transition-all p-6 text-center group",
+              "relative flex min-h-[280px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed transition-all p-6 text-center group",
               dragActive 
                 ? "border-blue-500 bg-blue-50/60 scale-[1.01]" 
                 : "border-slate-200 bg-slate-50/50 hover:border-blue-400 hover:bg-blue-50/30"
@@ -210,29 +256,44 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
               ref={fileInputRef}
               type="file"
               className="hidden"
-              accept=".pdf,application/pdf"
+              accept=".pdf,application/pdf,image/png,image/jpeg,image/jpg,image/webp"
               onChange={handleFileChange}
             />
             
-            <div className="w-16 h-16 rounded-2xl bg-blue-100 text-blue-600 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-sm">
-              <FileUp className="w-8 h-8" />
+            <div className="relative mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-blue-100 text-blue-600 flex items-center justify-center group-hover:scale-110 transition-transform shadow-sm">
+                <FileUp className="w-8 h-8" />
+              </div>
+              <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                <ImageIcon className="w-4 h-4" />
+              </div>
             </div>
 
             <h3 className="text-base font-black text-slate-900 mb-1">
-              Drop your Syllabus PDF here
+              Drop your Syllabus PDF or Screenshot here
             </h3>
-            <p className="text-xs text-slate-400 font-medium mb-4">
-              or click to browse from your device • Extracts automatically
+            <p className="text-xs text-slate-500 font-medium mb-4 max-w-sm">
+              Drag & drop full syllabus PDF, subject outline screenshot, or paste directly with <kbd className="px-1.5 py-0.5 rounded bg-slate-200 font-mono text-[10px] text-slate-800 font-bold">Ctrl+V</kbd>
             </p>
 
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold shadow-xs">
-              <FileText className="w-3.5 h-3.5 text-blue-600" />
-              <span>Supports PDF up to 25MB</span>
-            </span>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-bold shadow-xs">
+                <FileText className="w-3.5 h-3.5 text-blue-600" />
+                <span>PDF Syllabus</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-bold shadow-xs">
+                <Camera className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Screenshot (PNG, JPG)</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-bold shadow-xs">
+                <Clipboard className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Paste (Ctrl+V)</span>
+              </span>
+            </div>
           </div>
         ) : (
           /* Live Animated Loading Bar with Exact Percentage */
-          <div className="py-8 px-4 text-center space-y-6">
+          <div className="py-6 px-4 text-center space-y-6">
             
             {/* Spinning Indicator & Percentage Badge */}
             <div className="relative inline-flex items-center justify-center">
@@ -244,10 +305,24 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
               </div>
             </div>
 
+            {/* Thumbnail Preview if Screenshot was uploaded */}
+            {imagePreview && (
+              <div className="max-w-xs mx-auto rounded-xl overflow-hidden border border-slate-200 shadow-xs relative group">
+                <img 
+                  src={imagePreview} 
+                  alt="Syllabus Screenshot Preview" 
+                  className="w-full h-32 object-cover object-top"
+                />
+                <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center text-white text-[11px] font-bold">
+                  <span>Vision OCR Scanning Screenshot</span>
+                </div>
+              </div>
+            )}
+
             {/* Title & Filename */}
             <div className="space-y-1">
               <h3 className="text-base font-black text-slate-900">
-                Extracting Academic Syllabus
+                {imagePreview ? 'Analyzing Subject Screenshot' : 'Extracting Academic Syllabus'}
               </h3>
               {file && (
                 <p className="text-xs text-slate-400 font-mono truncate max-w-sm mx-auto">
@@ -259,7 +334,7 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
             {/* Dynamic Progress Bar */}
             <div className="space-y-2 max-w-md mx-auto">
               <div className="flex items-center justify-between text-xs font-mono font-bold">
-                <span className="text-blue-600 font-black">Extracting Progress</span>
+                <span className="text-blue-600 font-black">Extraction Progress</span>
                 <span className="text-slate-800">{progress}%</span>
               </div>
 
