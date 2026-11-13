@@ -18,7 +18,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { syllabusParsingAgent } from '../services/geminiService';
 import { db, auth } from '../lib/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 import { cn } from '../lib/utils';
 
@@ -153,29 +153,44 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
       const detectedMime = selectedFile.type || (isImage ? 'image/png' : 'application/pdf');
       const data = await syllabusParsingAgent(base64, selectedFile.name, detectedMime);
 
+      // Stop simulation timer immediately once extraction returns
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+
       // Advance to 92%
       setProgress(92);
       setStatusMessage('Finalizing curriculum database mapping...');
 
-      // 3. Ensure authenticated session (anonymous if not logged in)
+      const sanitizedData = JSON.parse(JSON.stringify(data));
+
+      // 3. Ensure authenticated session (anonymous if not logged in) with timeout guard
       if (!auth.currentUser) {
         try {
-          await signInAnonymously(auth);
+          await Promise.race([
+            signInAnonymously(auth),
+            new Promise((resolve) => setTimeout(resolve, 1500))
+          ]);
         } catch (authErr) {
           console.warn("Anonymous auth note:", authErr);
         }
       }
 
-      // 4. Save to Firestore if available, but never block user if permissions fail
+      // 4. Save to Firestore with timeout guard so UI never stalls at 92%
       let docId = `curriculum_${Date.now()}`;
       if (auth.currentUser) {
         try {
-          const docRef = await addDoc(collection(db, 'curricula'), {
-            userId: auth.currentUser.uid,
-            ...data,
-            createdAt: serverTimestamp()
-          });
-          docId = docRef.id;
+          const newDocRef = doc(collection(db, 'curricula'));
+          docId = newDocRef.id;
+          await Promise.race([
+            setDoc(newDocRef, {
+              userId: auth.currentUser.uid,
+              ...sanitizedData,
+              createdAt: serverTimestamp()
+            }),
+            new Promise((resolve) => setTimeout(resolve, 1500))
+          ]);
         } catch (dbErr) {
           console.warn("Firestore save warning, continuing with local persistence:", dbErr);
         }
@@ -184,7 +199,7 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
       // 5. Always persist to localStorage for instant recovery
       const finalCurriculum = {
         id: docId,
-        ...data,
+        ...sanitizedData,
         userId: auth.currentUser?.uid || 'guest_user',
         createdAt: Date.now()
       };
@@ -195,13 +210,12 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
       }
 
       // 6. Complete loading at 100%
-      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
       setProgress(100);
       setStatusMessage('Curriculum extracted successfully! Launching Command Center...');
 
       setTimeout(() => {
         onComplete(finalCurriculum);
-      }, 500);
+      }, 900);
 
     } catch (err: any) {
       console.error("Extraction error:", err);
@@ -295,11 +309,21 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
           /* Live Animated Loading Bar with Exact Percentage */
           <div className="py-6 px-4 text-center space-y-6">
             
-            {/* Spinning Indicator & Percentage Badge */}
+            {/* Spinning Indicator / Completed Checkmark & Percentage Badge */}
             <div className="relative inline-flex items-center justify-center">
-              <div className="w-20 h-20 rounded-full border-4 border-slate-100 flex items-center justify-center relative">
-                <Loader2 className="w-10 h-10 text-blue-600 animate-spin absolute" />
-                <span className="text-sm font-black font-mono text-slate-900">
+              <div className={cn(
+                "w-20 h-20 rounded-full border-4 flex items-center justify-center relative transition-colors",
+                progress >= 100 ? "border-emerald-200 bg-emerald-50" : "border-slate-100"
+              )}>
+                {progress >= 100 ? (
+                  <CheckCircle2 className="w-8 h-8 text-emerald-600 mb-4" />
+                ) : (
+                  <Loader2 className="w-10 h-10 text-blue-600 animate-spin absolute" />
+                )}
+                <span className={cn(
+                  "text-sm font-black font-mono",
+                  progress >= 100 ? "text-emerald-700 absolute bottom-2.5 text-xs" : "text-slate-900"
+                )}>
                   {progress}%
                 </span>
               </div>
@@ -322,7 +346,11 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
             {/* Title & Filename */}
             <div className="space-y-1">
               <h3 className="text-base font-black text-slate-900">
-                {imagePreview ? 'Analyzing Subject Screenshot' : 'Extracting Academic Syllabus'}
+                {progress >= 100
+                  ? 'Syllabus Extraction Complete!'
+                  : imagePreview
+                  ? 'Analyzing Subject Screenshot'
+                  : 'Extracting Academic Syllabus'}
               </h3>
               {file && (
                 <p className="text-xs text-slate-400 font-mono truncate max-w-sm mx-auto">
@@ -334,20 +362,30 @@ export default function SyllabusUpload({ onComplete }: { onComplete: (curriculum
             {/* Dynamic Progress Bar */}
             <div className="space-y-2 max-w-md mx-auto">
               <div className="flex items-center justify-between text-xs font-mono font-bold">
-                <span className="text-blue-600 font-black">Extraction Progress</span>
-                <span className="text-slate-800">{progress}%</span>
+                <span className={cn("font-black", progress >= 100 ? "text-emerald-600" : "text-blue-600")}>
+                  Extraction Progress
+                </span>
+                <span className={cn(progress >= 100 ? "text-emerald-700" : "text-slate-800")}>{progress}%</span>
               </div>
 
               {/* Bar track */}
               <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-200/80">
                 <motion.div
-                  className="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 rounded-full transition-all duration-300"
+                  className={cn(
+                    "h-full rounded-full transition-all duration-300",
+                    progress >= 100
+                      ? "bg-gradient-to-r from-emerald-500 to-teal-500"
+                      : "bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500"
+                  )}
                   style={{ width: `${progress}%` }}
                 />
               </div>
 
               {/* Status Message */}
-              <p className="text-xs text-slate-500 font-medium pt-1 animate-pulse">
+              <p className={cn(
+                "text-xs font-medium pt-1",
+                progress >= 100 ? "text-emerald-600 font-bold" : "text-slate-500 animate-pulse"
+              )}>
                 {statusMessage}
               </p>
             </div>

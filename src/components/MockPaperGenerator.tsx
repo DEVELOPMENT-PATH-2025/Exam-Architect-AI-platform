@@ -2,31 +2,23 @@ import { useState, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { 
-  FileDown, 
   Download, 
   Loader2, 
   ArrowLeft, 
-  Printer, 
-  FileText,
   Star,
-  CheckCircle2,
-  AlertTriangle,
   TrendingUp,
   Search,
-  Filter,
-  Layers,
-  Sparkles,
-  BarChart3
+  Check,
+  RotateCcw
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { generate500QuestionBank, BankQuestion, UnitSummary } from '../lib/questionBankGenerator';
+import { generate500QuestionBank } from '../lib/questionBankGenerator';
 import { cn } from '../lib/utils';
 
 export default function MockPaperGenerator({ curriculum, onBack }: { curriculum: any, onBack: () => void }) {
   const [subject, setSubject] = useState(curriculum?.subjects[0]?.name || '');
   const [downloading, setDownloading] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
-  const [activeUnitFilter, setActiveUnitFilter] = useState<number>(0); // 0 = all
+  const [selectedUnits, setSelectedUnits] = useState<number[]>([]); // [] = all units (500 Qs)
   const [filterHighProbOnly, setFilterHighProbOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -40,10 +32,40 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
     return generate500QuestionBank(selectedSub.name, selectedSub.topics || []);
   }, [selectedSub]);
 
+  // Toggle a unit in multi-select mode
+  const toggleUnit = (unitIndex: number) => {
+    setSelectedUnits((prev) =>
+      prev.includes(unitIndex)
+        ? prev.filter((id) => id !== unitIndex)
+        : [...prev, unitIndex].sort((a, b) => a - b)
+    );
+  };
+
+  // Units currently targeted for preview & PDF download
+  const targetUnits = useMemo(() => {
+    if (selectedUnits.length === 0) return units;
+    const matched = units.filter((u) => selectedUnits.includes(u.unitIndex));
+    return matched.length > 0 ? matched : units;
+  }, [units, selectedUnits]);
+
+  const targetUnitNumbers = useMemo(() => targetUnits.map((u) => u.unitIndex), [targetUnits]);
+  const totalExportQuestions = targetUnits.length * 100;
+  const isCustomUnitSelection = selectedUnits.length > 0 && selectedUnits.length < units.length;
+
+  const selectedUnitsBadge = useMemo(() => {
+    if (!isCustomUnitSelection) return `All ${units.length} Units`;
+    if (targetUnitNumbers.length === 1) return `Unit ${targetUnitNumbers[0]}`;
+    return `Units ${targetUnitNumbers.join(', ')}`;
+  }, [isCustomUnitSelection, units.length, targetUnitNumbers]);
+
+  const downloadButtonLabel = isCustomUnitSelection
+    ? `Download ${selectedUnitsBadge} PDF (${totalExportQuestions} Qs)`
+    : `Download ${totalExportQuestions} Qs PDF`;
+
   // Filtered questions for the interactive in-app preview
   const filteredQuestions = useMemo(() => {
     return questions.filter((q) => {
-      if (activeUnitFilter !== 0 && q.unitIndex !== activeUnitFilter) return false;
+      if (selectedUnits.length > 0 && !selectedUnits.includes(q.unitIndex)) return false;
       if (filterHighProbOnly && q.probabilityPercent < 85) return false;
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase();
@@ -51,12 +73,12 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
       }
       return true;
     });
-  }, [questions, activeUnitFilter, filterHighProbOnly, searchQuery]);
+  }, [questions, selectedUnits, filterHighProbOnly, searchQuery]);
 
-  // PDF Generator for 500 Questions
+  // PDF Generator for selected units (100 Qs per selected unit, up to 500 Qs)
   const generatePDF = async () => {
     setDownloading(true);
-    setProgressMsg('Synthesizing 500-question archive across 5 units...');
+    setProgressMsg(`Synthesizing ${totalExportQuestions}-question archive (${selectedUnitsBadge})...`);
 
     // Allow UI to paint the progress state
     await new Promise((r) => setTimeout(r, 80));
@@ -81,12 +103,20 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
 
       doc.setFontSize(13);
       doc.setTextColor(37, 99, 235); // blue-600
-      doc.text(`Massive 500-Question Intensive Bank: ${selectedSub.name}`, 105, 26, { align: 'center' });
+      const bankHeading = isCustomUnitSelection
+        ? `${totalExportQuestions}-Question Bank (${selectedUnitsBadge}): ${selectedSub.name}`
+        : `Massive 500-Question Intensive Bank: ${selectedSub.name}`;
+      doc.text(bankHeading, 105, 26, { align: 'center' });
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(10);
       doc.setTextColor(71, 85, 105); // slate-600
-      doc.text(`Course Code: ${moduleCode} | Semester: ${semester} | 7 Marks per Question`, 105, 33, { align: 'center' });
+      doc.text(
+        `Course Code: ${moduleCode} | Semester: ${semester} | ${totalExportQuestions} Qs (${selectedUnitsBadge}) | 7 Marks per Question`,
+        105,
+        33,
+        { align: 'center' }
+      );
 
       doc.setDrawColor(203, 213, 225); // slate-300
       doc.setLineWidth(0.4);
@@ -101,22 +131,26 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.setTextColor(15, 23, 42);
-      doc.text('AI PREDICTOR & FREQUENCY LEGEND:', 14, 45);
+      doc.text('EXAM PREDICTOR & FREQUENCY LEGEND:', 14, 45);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(51, 65, 85);
       doc.text('• Very High Probability (>90%): High recurrence in last 10 years (repeated 5-6x in PYQs). Mandatory exam target.', 14, 50);
       doc.text('• High Probability (80-89%): Recurring cyclic question (repeated 4x in PYQs). High probability of direct appearance.', 14, 54);
-      doc.text('• Unit Distribution: Exactly 100 subjective questions per unit across 5 units = 500 Questions Total.', 14, 58);
+      doc.text(
+        `• Unit Distribution: 100 subjective questions per selected unit (${selectedUnitsBadge}) = ${totalExportQuestions} Questions Total.`,
+        14,
+        58
+      );
 
-      setProgressMsg('Rendering unit-wise question tables (100 Qs per unit)...');
+      setProgressMsg(`Rendering ${targetUnits.length} selected ${targetUnits.length === 1 ? 'unit' : 'units'} (100 Qs each)...`);
       await new Promise((r) => setTimeout(r, 60));
 
-      // 3. Build Table Rows with Unit Section Breaks
+      // 3. Build Table Rows ONLY for Selected Units
       const tableRows: any[] = [];
 
-      units.forEach((unitSummary) => {
+      targetUnits.forEach((unitSummary) => {
         // Section Header Row
         tableRows.push([
           {
@@ -134,7 +168,7 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
         ]);
 
         // 100 questions for this unit
-        const unitQuestions = questions.filter(q => q.unitIndex === unitSummary.unitIndex);
+        const unitQuestions = questions.filter((q) => q.unitIndex === unitSummary.unitIndex);
         unitQuestions.forEach((q) => {
           tableRows.push([
             q.id.toString(),
@@ -147,7 +181,7 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
         });
       });
 
-      // 4. Generate AutoTable with 500 rows across pages
+      // 4. Generate AutoTable across pages
       autoTable(doc, {
         startY: 65,
         head: [['#', 'Unit', 'Subjective Long Architecture Question (7 Marks)', 'PYQ Frequency', 'Exam Prob.', 'Marks']],
@@ -180,7 +214,6 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
         },
         margin: { left: 10, right: 10, top: 15, bottom: 15 },
         didParseCell: (data) => {
-          // Highlight Very High Probability cells in column 4
           if (data.column.index === 4 && data.section === 'body' && typeof data.cell.raw === 'string') {
             if (data.cell.raw.includes('Very High')) {
               data.cell.styles.textColor = [185, 28, 28]; // red-700
@@ -195,23 +228,27 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(7.5);
           doc.setTextColor(148, 163, 184); // slate-400
-          
+
           // Running Header (pages > 1)
           if (data.pageNumber > 1) {
-            doc.text(`${selectedSub.name} — 500-Question Intensive Bank (100 per Unit)`, 10, 8);
-            doc.text(`AI Predictor & PYQ Frequency Analysis`, 200, 8, { align: 'right' });
+            doc.text(`${selectedSub.name} — ${totalExportQuestions}-Question Bank (${selectedUnitsBadge})`, 10, 8);
+            doc.text(`PYQ Frequency & Probability Matrix`, 200, 8, { align: 'right' });
             doc.setDrawColor(226, 232, 240);
             doc.setLineWidth(0.2);
             doc.line(10, 10, 200, 10);
           }
 
           // Running Footer
-          doc.text(`ExamArchitect AI • Semester End-Term Preparation • Page ${data.pageNumber} of ${pageCount}`, 105, 292, { align: 'center' });
+          doc.text(`ExamArchitect • Semester End-Term Preparation • Page ${data.pageNumber} of ${pageCount}`, 105, 292, { align: 'center' });
         }
       });
 
       setProgressMsg('Saving PDF file...');
-      doc.save(`${selectedSub.name.replace(/[^a-zA-Z0-9]/g, '_')}_500_Question_Bank.pdf`);
+      const sanitizedSubject = selectedSub.name.replace(/[^a-zA-Z0-9]/g, '_');
+      const fileName = isCustomUnitSelection
+        ? `${sanitizedSubject}_Units_${targetUnitNumbers.join('_')}_${totalExportQuestions}_Questions.pdf`
+        : `${sanitizedSubject}_500_Question_Bank.pdf`;
+      doc.save(fileName);
     } catch (err) {
       console.error('PDF Generation Error:', err);
     } finally {
@@ -241,7 +278,7 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
             500 Question Bank & Predictor Analysis
           </h1>
           <p className="text-sm text-slate-500 font-medium mt-1">
-            Exactly 100 questions per unit across 5 units with past-year frequency and probability of appearance.
+            Select one or multiple units below to preview and download a custom question bank PDF (100 questions per unit).
           </p>
         </div>
 
@@ -251,7 +288,10 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
           <div className="relative">
             <select
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={(e) => {
+                setSubject(e.target.value);
+                setSelectedUnits([]);
+              }}
               className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer pr-8"
             >
               {curriculum.subjects.map((s: any) => (
@@ -262,71 +302,105 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
             </select>
           </div>
 
-          {/* Download 500 Questions PDF Button */}
+          {/* Download Selected Units / Complete 500 Qs PDF Button */}
           <button
             disabled={downloading}
             onClick={generatePDF}
-            className="px-6 py-3.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+            className="px-6 py-3.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 whitespace-nowrap"
           >
             {downloading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin text-white" />
-                <span>{progressMsg || 'Generating 500 Qs...'}</span>
+                <span>{progressMsg || `Generating ${totalExportQuestions} Qs...`}</span>
               </>
             ) : (
               <>
                 <Download className="w-4 h-4 text-blue-200" />
-                <span>Download 500 Qs PDF</span>
+                <span>{downloadButtonLabel}</span>
               </>
             )}
           </button>
         </div>
       </div>
 
-      {/* 2. Unit-Wise Metric Cards (5 Units x 100 Qs = 500 Qs) */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        {units.map((u) => {
-          const isSelected = activeUnitFilter === u.unitIndex;
-          return (
+      {/* 2. Multi-Select Unit-Wise Metric Cards (5 Units x 100 Qs = 500 Qs) */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+          <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
+            <span>Multi-Unit PDF Selection:</span>
+            <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-[11px] font-black">
+              {selectedUnitsBadge} • {totalExportQuestions} Qs Ready
+            </span>
+          </div>
+          {selectedUnits.length > 0 && (
             <button
-              key={u.unitIndex}
-              onClick={() => setActiveUnitFilter(isSelected ? 0 : u.unitIndex)}
-              className={cn(
-                "p-4 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden",
-                isSelected 
-                  ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/20" 
-                  : "bg-white text-slate-800 border-slate-200/80 hover:border-blue-300"
-              )}
+              onClick={() => setSelectedUnits([])}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-blue-600 transition-colors cursor-pointer"
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className={cn(
-                  "text-[10px] font-black uppercase tracking-wider",
-                  isSelected ? "text-blue-100" : "text-blue-600"
-                )}>
-                  {u.unitLabel}
-                </span>
-                <span className={cn(
-                  "text-[10px] font-mono font-bold px-1.5 py-0.5 rounded",
-                  isSelected ? "bg-blue-700 text-white" : "bg-slate-100 text-slate-600"
-                )}>
-                  100 Qs
-                </span>
-              </div>
-              <h4 className={cn(
-                "text-xs font-black truncate mb-2",
-                isSelected ? "text-white" : "text-slate-900"
-              )}>
-                {u.title}
-              </h4>
-              <div className="flex items-center justify-between text-[10px]">
-                <span className={isSelected ? "text-blue-200" : "text-slate-400"}>High Prob:</span>
-                <span className={cn("font-bold", isSelected ? "text-white" : "text-emerald-600")}>
-                  {u.highProbabilityCount} Qs
-                </span>
-              </div>
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset to All 5 Units (500 Qs)</span>
             </button>
-          );
-        })}
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {units.map((u) => {
+            const isSelected = selectedUnits.includes(u.unitIndex);
+            return (
+              <button
+                key={u.unitIndex}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => toggleUnit(u.unitIndex)}
+                className={cn(
+                  "p-4 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden",
+                  isSelected 
+                    ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/20" 
+                    : "bg-white text-slate-800 border-slate-200/80 hover:border-blue-300"
+                )}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "w-4 h-4 rounded flex items-center justify-center border transition-colors",
+                        isSelected
+                          ? "bg-white border-white text-blue-600"
+                          : "bg-slate-50 border-slate-300 text-transparent"
+                      )}
+                    >
+                      <Check className="w-3 h-3 stroke-[3]" />
+                    </span>
+                    <span className={cn(
+                      "text-[10px] font-black uppercase tracking-wider",
+                      isSelected ? "text-blue-100" : "text-blue-600"
+                    )}>
+                      {u.unitLabel}
+                    </span>
+                  </div>
+                  <span className={cn(
+                    "text-[10px] font-mono font-bold px-1.5 py-0.5 rounded",
+                    isSelected ? "bg-blue-700 text-white" : "bg-slate-100 text-slate-600"
+                  )}>
+                    100 Qs
+                  </span>
+                </div>
+                <h4 className={cn(
+                  "text-xs font-black truncate mb-2",
+                  isSelected ? "text-white" : "text-slate-900"
+                )}>
+                  {u.title}
+                </h4>
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className={isSelected ? "text-blue-200" : "text-slate-400"}>High Prob:</span>
+                  <span className={cn("font-bold", isSelected ? "text-white" : "text-emerald-600")}>
+                    {u.highProbabilityCount} Qs
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* 3. In-App Interactive Question Browser & Predictor Filter */}
@@ -336,32 +410,40 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
           <div className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={() => setActiveUnitFilter(0)}
+              type="button"
+              onClick={() => setSelectedUnits([])}
               className={cn(
                 "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer",
-                activeUnitFilter === 0 
+                selectedUnits.length === 0 
                   ? "bg-slate-900 text-white" 
                   : "bg-slate-100 text-slate-600 hover:bg-slate-200"
               )}
             >
               All 500 Questions
             </button>
-            {units.map((u) => (
-              <button
-                key={u.unitIndex}
-                onClick={() => setActiveUnitFilter(u.unitIndex)}
-                className={cn(
-                  "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer",
-                  activeUnitFilter === u.unitIndex 
-                    ? "bg-blue-600 text-white" 
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                )}
-              >
-                {u.unitLabel} (100)
-              </button>
-            ))}
+            {units.map((u) => {
+              const isSelected = selectedUnits.includes(u.unitIndex);
+              return (
+                <button
+                  key={u.unitIndex}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => toggleUnit(u.unitIndex)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1.5",
+                    isSelected 
+                      ? "bg-blue-600 text-white shadow-xs" 
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  )}
+                >
+                  {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                  <span>{u.unitLabel} (100)</span>
+                </button>
+              );
+            })}
 
             <button
+              type="button"
               onClick={() => setFilterHighProbOnly(!filterHighProbOnly)}
               className={cn(
                 "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 border",
@@ -382,16 +464,16 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search 500 questions..."
+              placeholder={`Search ${totalExportQuestions} questions...`}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
         </div>
 
         {/* Results Counter */}
-        <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 font-medium">
           <span>
-            Showing <strong>{filteredQuestions.length}</strong> of <strong>500</strong> strategic examination questions
+            Showing <strong>{filteredQuestions.length}</strong> of <strong>{totalExportQuestions}</strong> strategic examination questions ({selectedUnitsBadge})
           </span>
           <span className="text-[11px] text-blue-600 font-bold">
             Standard 7-Mark University Pattern
@@ -445,13 +527,21 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
                   </td>
                 </tr>
               ))}
+              {filteredQuestions.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="py-10 text-center text-xs font-medium text-slate-500">
+                    No matching questions found for the current search or filter criteria.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
 
           {filteredQuestions.length > 50 && (
             <div className="p-4 bg-slate-50 text-center border-t border-slate-100">
               <p className="text-xs font-bold text-slate-600 mb-2">
-                Showing first 50 questions in web preview. The downloaded PDF contains all <strong>500 questions (100 per unit)</strong>.
+                Showing first 50 questions in web preview. The downloaded PDF contains all{' '}
+                <strong>{totalExportQuestions} questions ({selectedUnitsBadge}, 100 per unit)</strong>.
               </p>
               <button
                 disabled={downloading}
@@ -459,7 +549,11 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
                 className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 cursor-pointer shadow-sm"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Download Complete 500-Question PDF</span>
+                <span>
+                  {isCustomUnitSelection
+                    ? `Download Selected ${totalExportQuestions}-Question PDF (${selectedUnitsBadge})`
+                    : 'Download Complete 500-Question PDF'}
+                </span>
               </button>
             </div>
           )}

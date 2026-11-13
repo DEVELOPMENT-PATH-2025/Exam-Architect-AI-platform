@@ -7,6 +7,58 @@
     <meta name="description" content="Personalized exam-prep application that transforms university curriculum and textbooks into interactive practice modules using Gemini AI." />
     <meta property="og:title" content="ExamArchitect AI" />
     <meta property="og:description" content="Personalized exam-prep application that transforms university curriculum and textbooks into interactive practice modules using Gemini AI." />
+    <script>
+      (function () {
+        try {
+          var currentFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : undefined;
+          var targets = [
+            window,
+            typeof globalThis !== 'undefined' ? globalThis : null,
+            Object.getPrototypeOf ? Object.getPrototypeOf(window) : null,
+            window.Window && window.Window.prototype
+          ];
+          for (var i = 0; i < targets.length; i++) {
+            var target = targets[i];
+            if (!target) continue;
+            var desc = Object.getOwnPropertyDescriptor(target, 'fetch');
+            var isWin = target === window || target === globalThis;
+            if ((isWin && (!desc || desc.configurable)) || (desc && desc.get && !desc.set && desc.configurable)) {
+              try {
+                Object.defineProperty(target, 'fetch', {
+                  get: function () { return currentFetch; },
+                  set: function (nextFetch) {
+                    if (typeof nextFetch === 'function') currentFetch = nextFetch;
+                  },
+                  enumerable: desc ? desc.enumerable !== false : true,
+                  configurable: true
+                });
+              } catch (innerErr) {}
+            }
+          }
+
+          window.addEventListener('error', function (event) {
+            var src = (event && event.filename) || '';
+            var msg = (event && event.message) || '';
+            if (src.indexOf('chrome-extension://') === 0 || msg.indexOf('Cannot set property fetch') !== -1) {
+              event.preventDefault();
+            }
+          }, true);
+
+          window.addEventListener('unhandledrejection', function (event) {
+            var reason = event && event.reason;
+            var msg = (reason && (reason.message || String(reason))) || '';
+            var stack = (reason && reason.stack) || '';
+            if (
+              stack.indexOf('chrome-extension://') !== -1 ||
+              msg.indexOf('Cannot set property fetch') !== -1 ||
+              msg.indexOf('WebSocket closed without opened') !== -1
+            ) {
+              event.preventDefault();
+            }
+          }, true);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
+import { prefetchAllQuestionModules } from '../services/geminiService';
 
 export default function Dashboard({ curriculum, onStartPractice, onGenerateMock }: { 
   curriculum: any, 
@@ -179,6 +180,7 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
               return (
                 <div 
                   key={sub.code || idx}
+                  onMouseEnter={() => prefetchAllQuestionModules(sub.name, sub.topics || [])}
                   className="p-5 hover:bg-slate-50/80 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                 >
                   <div className="space-y-1 flex-1 min-w-0">
@@ -282,7 +284,7 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
               Preparation Strategy
             </h4>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Solve topic-wise 7-mark questions and let the AI Examiner score your answers line-by-line with standard university grading rubrics.
+              Solve topic-wise 7-mark and numerical questions with progressive 3-level hints, keyword gap analysis, and university-ready model answers.
             </p>
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-slate-500">
               <span>Next Term:</span>

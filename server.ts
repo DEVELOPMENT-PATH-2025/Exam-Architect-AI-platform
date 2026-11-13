@@ -23,7 +23,7 @@ const authLimiter = rateLimit({
 
 const geminiApiLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 30,
+  max: 80,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Rate limit exceeded for AI generation requests. Please slow down." }
@@ -74,26 +74,56 @@ const CANDIDATE_MODELS = [
   "gemini-2.5-pro"
 ];
 
+const FAST_CANDIDATE_MODELS = [
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-2.5-pro"
+];
+
 async function generateWithModelFallback(params: {
   contents: any;
   config?: any;
+  preferFast?: boolean;
 }) {
   let lastError: any = null;
-  for (const model of CANDIDATE_MODELS) {
+  const models = params.preferFast ? FAST_CANDIDATE_MODELS : CANDIDATE_MODELS;
+
+  for (const model of models) {
     try {
+      const effectiveConfig = { ...(params.config || {}) };
+      if (params.preferFast && model.startsWith("gemini-2.5") && !effectiveConfig.thinkingConfig) {
+        effectiveConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
+
       const response = await ai.models.generateContent({
         model,
         contents: params.contents,
-        config: params.config,
+        config: effectiveConfig,
       });
       return response;
     } catch (err: any) {
       lastError = err;
       const errMsg = (err?.message || "").toLowerCase();
+
+      // If thinkingConfig isn't supported on a fallback model, retry once without it
+      if (params.preferFast && (errMsg.includes("thinking") || err?.code === 400)) {
+        try {
+          const response = await ai.models.generateContent({
+            model,
+            contents: params.contents,
+            config: params.config,
+          });
+          return response;
+        } catch (retryErr: any) {
+          lastError = retryErr;
+        }
+      }
+
       const isRecoverable = 
         err?.status === "RESOURCE_EXHAUSTED" || 
         err?.code === 429 || 
-        err?.code === 404 ||
+        err?.code === 404 || 
         err?.status === "NOT_FOUND" ||
         errMsg.includes("429") || 
         errMsg.includes("404") || 
@@ -104,7 +134,6 @@ async function generateWithModelFallback(params: {
         errMsg.includes("no longer available");
 
       if (isRecoverable) {
-        // Quietly proceed to the next candidate model without polluting stderr
         continue;
       }
       break;
@@ -386,117 +415,443 @@ Output must be a valid JSON object matching the requested schema.`;
     }
   });
 
-  // 2. Practice Questions API
+  // 2. Practice Questions API (Optimized for immediate response)
   app.post("/api/gemini/architect-questions", geminiApiLimiter, async (req, res) => {
     const { subject = "Core Engineering", topics = [], pattern = "Standard University Pattern", questionType = "short" } = req.body;
+    const topicList = Array.isArray(topics) && topics.length > 0 ? topics : [subject];
+    const cleanSubject = String(subject).trim();
+    const cacheKey = `questions_v3_${cleanSubject.toLowerCase()}_${questionType}_${topicList.slice(0, 3).join("_").slice(0, 80)}`;
+
+    const buildFallbackQuestions = () => {
+      const t0 = topicList[0] || cleanSubject;
+      const t1 = topicList[1] || topicList[0] || cleanSubject;
+      const t2 = topicList[2] || topicList[0] || cleanSubject;
+      const t3 = topicList[3] || topicList[1] || cleanSubject;
+      const t4 = topicList[4] || topicList[0] || cleanSubject;
+
+      if (questionType === "numerical") {
+        return [
+          {
+            text: `Given a ${cleanSubject} system processing N = 10,000 records over ${t0} with block size B = 4096 bytes and record size R = 256 bytes (unspanned), calculate: (a) blocking factor (bfr), (b) total blocks required, and (c) average lookup cost in balanced indexing.`,
+            marks: 7,
+            conceptNudge: "Start by computing how many complete records fit into one 4096-byte block using floor(B / R).",
+            modelAnswer: "1. Given: N = 10,000 records, B = 4096 bytes, R = 256 bytes.\n2. Blocking Factor (bfr) = floor(4096 / 256) = 16 records/block.\n3. Total Blocks = ceil(10,000 / 16) = 625 blocks.\n4. Balanced Lookup Cost = ceil(log2(625)) ≈ 10 block accesses.",
+            keywords: ["Blocking Factor", "Total Blocks", "Logarithmic Access", "Unspanned"]
+          },
+          {
+            text: `In ${t1} (${cleanSubject}), an execution pipeline handles 4 concurrent tasks with arrival times [0, 2, 4, 6] ms and service times [7, 4, 3, 5] ms. Compute the average turnaround time and average waiting time under FCFS scheduling.`,
+            marks: 7,
+            conceptNudge: "Track completion time C(i) sequentially first, then apply Turnaround = Completion - Arrival.",
+            modelAnswer: "1. Completion Times: T1 = 7, T2 = 11, T3 = 14, T4 = 19 ms.\n2. Turnaround Times (TAT = C - A): [7, 9, 10, 13] -> Avg TAT = 39 / 4 = 9.75 ms.\n3. Waiting Times (WT = TAT - S): [0, 5, 6, 8] -> Avg WT = 19 / 4 = 4.75 ms.",
+            keywords: ["Turnaround Time", "Waiting Time", "Completion Time", "Average Latency"]
+          },
+          {
+            text: `A transmission channel in ${t2} operates at a bandwidth of 20 MHz with Signal-to-Noise Ratio (SNR) of 30 dB. Using Shannon-Hartley capacity theorem, compute the maximum theoretical channel capacity in Mbps.`,
+            marks: 7,
+            conceptNudge: "Convert SNR from decibels (30 dB) into a linear power ratio using 10^(SNR_dB / 10) before applying log2.",
+            modelAnswer: "1. Given: B = 20 MHz, SNR_dB = 30 dB -> Linear SNR = 10^(30/10) = 1000.\n2. Formula: C = B * log2(1 + SNR).\n3. C = 20 * 10^6 * log2(1001) ≈ 20 * 9.967 Mbps = 199.34 Mbps.",
+            keywords: ["Bandwidth", "Linear SNR", "Shannon Capacity", "Mbps"]
+          },
+          {
+            text: `Consider an algorithm from ${t3} with recurrence T(n) = 2T(n/2) + 8n and base condition T(1) = 4. Evaluate exact T(16) iteratively and state its asymptotic tight bound.`,
+            marks: 7,
+            conceptNudge: "Expand T(16) -> T(8) -> T(4) -> T(2) -> T(1) step by step, then match with Master Theorem Case 2.",
+            modelAnswer: "1. T(2) = 2(4) + 16 = 24; T(4) = 2(24) + 32 = 80; T(8) = 2(80) + 64 = 224.\n2. T(16) = 2(224) + 128 = 576.\n3. By Master Theorem (a=2, b=2, f(n)=Θ(n)): T(n) = Θ(n log n).",
+            keywords: ["Recurrence Relation", "Base Condition", "Master Theorem", "Theta(n log n)"]
+          },
+          {
+            text: `A memory hierarchy in ${t4} has an L1 cache hit time of 1.5 ns, hit rate of 92%, and main memory miss penalty of 60 ns. Calculate the Effective Access Time (EAT) in nanoseconds.`,
+            marks: 7,
+            conceptNudge: "Multiply miss rate (1 - 0.92) by miss penalty and add it to the hit time.",
+            modelAnswer: "1. Given: Hit Time = 1.5 ns, Hit Rate = 0.92 -> Miss Rate = 0.08, Miss Penalty = 60 ns.\n2. Formula: EAT = Hit Time + (Miss Rate × Miss Penalty).\n3. EAT = 1.5 + (0.08 × 60) = 1.5 + 4.8 = 6.3 ns.",
+            keywords: ["Hit Rate", "Miss Penalty", "Effective Access Time", "Nanoseconds"]
+          },
+          {
+            text: `For a reliability model in ${cleanSubject}, three components with failure probabilities 0.05, 0.08, and 0.10 are connected in parallel. Compute overall system reliability.`,
+            marks: 7,
+            conceptNudge: "For parallel redundancy, calculate total failure probability as the product of individual failure probabilities.",
+            modelAnswer: "1. Given: P_fail = [0.05, 0.08, 0.10].\n2. Combined System Failure = 0.05 × 0.08 × 0.10 = 0.0004.\n3. System Reliability R = 1 - 0.0004 = 0.9996 (99.96%).",
+            keywords: ["Parallel Redundancy", "Failure Probability", "System Reliability", "99.96%"]
+          }
+        ];
+      }
+
+      if (questionType === "mcq") {
+        return [
+          {
+            text: `Which fundamental property best characterizes the core design goal of ${t0} in ${cleanSubject}?`,
+            marks: 1,
+            conceptNudge: "Eliminate options that increase coupling or break modularity constraints.",
+            modelAnswer: "Option A correctly captures modular abstraction and minimal operational overhead.",
+            keywords: ["Abstraction", "Modularity", "Efficiency", "Invariant"],
+            mcqOptions: [
+              "Modular abstraction with predictable performance bounds",
+              "Unbounded memory duplication across every layer",
+              "Elimination of all runtime validation checks",
+              "Strictly sequential single-threaded execution only"
+            ]
+          },
+          {
+            text: `When optimizing operations in ${t1}, which factor primarily governs worst-case scalability?`,
+            marks: 1,
+            conceptNudge: "Think about how resource growth scales as input size n doubles.",
+            modelAnswer: "Option B: Asymptotic growth rate with respect to input size n and memory footprint.",
+            keywords: ["Scalability", "Asymptotic Bound", "Input Size", "Overhead"],
+            mcqOptions: [
+              "Constant compiler warning count",
+              "Asymptotic growth rate relative to input size n",
+              "Operating system theme configuration",
+              "Manual source code indentation depth"
+            ]
+          },
+          {
+            text: `In ${t2}, what happens when boundary invariants are violated during execution?`,
+            marks: 1,
+            conceptNudge: "Consider consistency and state integrity guarantees.",
+            modelAnswer: "Option C: State consistency degrades, triggering validation failure or rollback.",
+            keywords: ["Invariant", "Consistency", "Rollback", "Validation"],
+            mcqOptions: [
+              "Throughput doubles automatically",
+              "Hardware clock speed increases permanently",
+              "State consistency breaks and validation/rollback is triggered",
+              "All cache lines become permanently read-only"
+            ]
+          },
+          {
+            text: `Which trade-off is most accurate when selecting between static and dynamic structures in ${t3}?`,
+            marks: 1,
+            conceptNudge: "Compare fixed contiguous layout speed versus dynamic resizing flexibility.",
+            modelAnswer: "Option A: Static yields faster contiguous access; dynamic provides flexible runtime growth.",
+            keywords: ["Static Layout", "Dynamic Growth", "Contiguous Access", "Flexibility"],
+            mcqOptions: [
+              "Static offers faster contiguous access; dynamic offers flexible sizing",
+              "Static supports unlimited growth without reallocation",
+              "Dynamic eliminates pointer or metadata overhead completely",
+              "Both have identical memory fragmentation behavior"
+            ]
+          },
+          {
+            text: `In university examination rubrics for ${t4}, which criterion demonstrates correct formal verification?`,
+            marks: 1,
+            conceptNudge: "Look for completeness across preconditions, invariants, and edge cases.",
+            modelAnswer: "Option D: Explicit verification of preconditions, invariants, and boundary cases.",
+            keywords: ["Preconditions", "Invariants", "Boundary Cases", "Verification"],
+            mcqOptions: [
+              "Skipping edge cases to save space",
+              "Using informal guesses without constraints",
+              "Assuming inputs are always sorted and non-empty",
+              "Verifying preconditions, invariants, and boundary cases"
+            ]
+          },
+          {
+            text: `Which metric best evaluates practical reliability across ${cleanSubject} modules?`,
+            marks: 1,
+            conceptNudge: "Focus on measurable fault tolerance and correctness under load.",
+            modelAnswer: "Option B: Correct output integrity alongside bounded latency under load.",
+            keywords: ["Reliability", "Bounded Latency", "Integrity", "Fault Tolerance"],
+            mcqOptions: [
+              "Number of comments per source file",
+              "Output correctness and bounded latency under stress",
+              "Size of documentation fonts",
+              "Total lines of unused configuration"
+            ]
+          }
+        ];
+      }
+
+      if (questionType === "long") {
+        return [
+          {
+            text: `Explain the complete architecture, core working principles, and practical trade-offs of ${t0} in ${cleanSubject}. Support your answer with a structured comparison and real-world use case.`,
+            marks: 7,
+            conceptNudge: "Break your 7-mark answer into 4 clear sections: Definition, Architecture/Workflow, Comparison Table, and Real Example.",
+            modelAnswer: `1. Definition: ${t0} provides a structured foundation for ${cleanSubject} reliability and abstraction.\n2. Core Architecture: Layered separation between interface, processing logic, and storage/control.\n3. Comparison: Balances throughput vs. resource overhead compared to naive approaches.\n4. Real Example: Production enterprise workload handling concurrent operations cleanly.`,
+            keywords: ["Architecture", "Layered Separation", "Trade-offs", "Real-World Example"]
+          },
+          {
+            text: `Discuss ${t1} in detail. Compare its primary variants, explain edge-case handling, and illustrate its significance in modern ${cleanSubject} systems.`,
+            marks: 7,
+            conceptNudge: "Think about how two variants differ in time/space cost and where each one excels in practice.",
+            modelAnswer: `1. Introduction: Formal purpose of ${t1}.\n2. Variant Breakdown: Contrast static/eager vs. dynamic/lazy strategies.\n3. Edge Cases & Guarantees: Boundary validation, error recovery, and invariant preservation.\n4. Engineering Application: Practical system integration scenario.`,
+            keywords: ["Variants", "Edge Cases", "Invariants", "System Integration"]
+          },
+          {
+            text: `Analyze ${t2} from a theoretical and design standpoint. Explain its key components, bottleneck scenarios, and optimization strategies.`,
+            marks: 7,
+            conceptNudge: "Identify where latency or contention builds up first, then explain the mechanism that resolves it.",
+            modelAnswer: `1. Core Components: Primary functional blocks of ${t2}.\n2. Bottlenecks: Contention, redundant overhead, and worst-case scaling.\n3. Optimization Strategies: Caching, indexing/batching, and structural decomposition.\n4. Summary Example: Measurable improvement in system response.`,
+            keywords: ["Components", "Bottlenecks", "Optimization", "Scalability"]
+          },
+          {
+            text: `Compare and contrast the major methodologies used in ${t3}. Derive their operational characteristics and justify when to choose each approach.`,
+            marks: 7,
+            conceptNudge: "Use a crisp 3-row comparison (mechanism, pros, limitations) after defining both methodologies.",
+            modelAnswer: `1. Overview of Methodologies in ${t3}.\n2. Step-by-Step Mechanism of Approach A vs Approach B.\n3. Structured Comparison: Complexity, memory footprint, and maintainability.\n4. Selection Criteria: Workload-driven decision guide.`,
+            keywords: ["Methodology", "Comparison", "Complexity", "Selection Criteria"]
+          },
+          {
+            text: `Describe the end-to-end lifecycle and correctness guarantees of ${t4} in ${cleanSubject}. Include failure modes and mitigation techniques.`,
+            marks: 7,
+            conceptNudge: "Walk sequentially from initialization -> execution -> validation -> recovery on failure.",
+            modelAnswer: `1. Lifecycle Stages: Initialization, active execution, verification, and termination.\n2. Correctness Guarantees: Consistency and boundary invariants.\n3. Failure Modes: Overflow, deadlock, or invalid state transitions.\n4. Mitigation: Validation guards, timeouts, and rollback protocols.`,
+            keywords: ["Lifecycle", "Correctness", "Failure Modes", "Mitigation"]
+          },
+          {
+            text: `Formulate a comprehensive design strategy combining principles from ${t0} and ${t2} to solve large-scale constraints in ${cleanSubject}.`,
+            marks: 7,
+            conceptNudge: "Connect how structural organization from the first topic supports performance guarantees in the second.",
+            modelAnswer: `1. Problem Context: Large-scale throughput and consistency requirements.\n2. Integrated Design: Combining modular structure with optimized processing paths.\n3. Trade-off Analysis: Space-time balance and maintainability.\n4. Applied Example: End-to-end industrial scenario.`,
+            keywords: ["Integrated Design", "Modularity", "Space-Time Tradeoff", "Applied Example"]
+          }
+        ];
+      }
+
+      // Default 'short' (2 marks)
+      return [
+        {
+          text: `Define the core concept of ${t0} in ${cleanSubject} and state two key advantages.`,
+          marks: 2,
+          conceptNudge: "Give a crisp 2-line definition first, then list 2 concise bullet advantages with a brief example.",
+          modelAnswer: `${t0} is a core mechanism in ${cleanSubject} that structures data/operations predictably. Advantages: (1) Improved modularity and maintainability, (2) Higher operational efficiency.`,
+          keywords: ["Definition", "Modularity", "Efficiency", "Structure"]
+        },
+        {
+          text: `Differentiate between primary modes or types within ${t1} with one brief example.`,
+          marks: 2,
+          conceptNudge: "State the core distinction in one sentence and contrast two types cleanly.",
+          modelAnswer: `The two primary modes differ in how resources are bound (static/compile-time vs. dynamic/runtime), trading predictability for flexibility.`,
+          keywords: ["Static vs Dynamic", "Flexibility", "Predictability", "Example"]
+        },
+        {
+          text: `What is the primary role of boundary invariants in ${t2}?`,
+          marks: 2,
+          conceptNudge: "Think about what prevents invalid states or runtime corruption during updates.",
+          modelAnswer: `Boundary invariants guarantee that structural rules remain true before and after every operation, preventing corrupted states.`,
+          keywords: ["Boundary Invariant", "Consistency", "State Integrity", "Validation"]
+        },
+        {
+          text: `State two common limitations or bottlenecks encountered in ${t3} and how they are mitigated.`,
+          marks: 2,
+          conceptNudge: "Name one space/time bottleneck and pair it with a standard optimization.",
+          modelAnswer: `(1) High lookup/traversal overhead—mitigated via indexing or caching; (2) Memory fragmentation—mitigated via pooling or compact layouts.`,
+          keywords: ["Bottleneck", "Overhead", "Mitigation", "Optimization"]
+        },
+        {
+          text: `Briefly explain how ${t4} contributes to reliability and correctness in ${cleanSubject}.`,
+          marks: 2,
+          conceptNudge: "Focus on error detection, structured recovery, or predictable verification.",
+          modelAnswer: `${t4} enforces systematic verification and controlled error handling, ensuring predictable outputs under edge-case inputs.`,
+          keywords: ["Reliability", "Verification", "Edge Cases", "Error Handling"]
+        },
+        {
+          text: `Mention two real-world engineering applications of ${t0} in modern software or hardware systems.`,
+          marks: 2,
+          conceptNudge: "Pick two concrete production systems (databases, OS schedulers, compilers, networks).",
+          modelAnswer: `Used in (1) high-throughput database indexing/query engines and (2) operating system resource schedulers for low-latency execution.`,
+          keywords: ["Database Engine", "Scheduler", "Low Latency", "Application"]
+        }
+      ];
+    };
+
     try {
-      const cacheKey = `questions_${subject}_${questionType}_${(topics || []).slice(0, 3).join("_")}`;
       const cached = getCached(cacheKey);
       if (cached) {
         return res.json(cached);
       }
 
-      const prompt = `Generate 10 university examination questions of type '${questionType}' for subject '${subject}' covering topics: ${(topics || []).join(", ")}. 
-Requirements:
-1. If questionType is 'short', generate short answer questions worth exactly 2 marks focusing on concise definitions and core concepts.
-2. If questionType is 'long', generate long answer questions worth exactly 7 marks in a comprehensive theoretical format (detailed architectural breakdown, conceptual explanations, comparative analysis, and structured academic theory).
-3. If questionType is 'numerical', generate STRICTLY DATA-BASED AND NUMERICAL-BASED PROBLEMS containing actual numerical datasets, given parameters, formula applications, and computational calculations.
-4. If questionType is 'mcq', generate multiple choice questions worth exactly 1 mark with 4 options (A, B, C, D) provided in 'mcqOptions'.
-5. Provide concise model answers and 3-5 mandatory keywords.`;
+      const typeInstruction =
+        questionType === "short"
+          ? "5 short-answer questions worth exactly 2 marks each focusing on crisp definitions, types, and examples."
+          : questionType === "long"
+          ? "5 long-answer questions worth exactly 7 marks each in university theory format (architecture, comparisons, workflows, real-world examples)."
+          : questionType === "numerical"
+          ? "5 STRICTLY DATA-BASED AND NUMERICAL PROBLEMS worth exactly 7 marks each containing concrete given numbers, formulas, and step-by-step calculation in modelAnswer."
+          : "5 multiple-choice questions worth 1 mark each with 4 clear choices in mcqOptions.";
 
-      const response = await generateWithModelFallback({
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                text: { type: Type.STRING },
-                marks: { type: Type.NUMBER },
-                modelAnswer: { type: Type.STRING },
-                keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-                mcqOptions: { type: Type.ARRAY, items: { type: Type.STRING } }
-              },
-              required: ["text", "marks", "modelAnswer", "keywords"]
+      const prompt = `Generate ${typeInstruction}
+Subject: '${cleanSubject}'
+Topics: ${topicList.slice(0, 5).join(", ")}
+Keep every field crisp and concise (modelAnswer in 3-4 short bullet points, under 55 words) for fast response.
+Fields per item:
+- text: clear university exam question
+- marks: exact number (${questionType === "short" ? 2 : questionType === "long" || questionType === "numerical" ? 7 : 1})
+- conceptNudge: 1 short clue sentence without giving away the answer
+- modelAnswer: concise, point-wise ideal university answer
+- keywords: 3-4 mandatory exam keywords${questionType === "mcq" ? "\n- mcqOptions: 4 distinct option strings" : ""}`;
+
+      const geminiGenerationPromise = (async () => {
+        const response = await generateWithModelFallback({
+          preferFast: true,
+          contents: prompt,
+          config: {
+            maxOutputTokens: 1300,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  text: { type: Type.STRING },
+                  marks: { type: Type.NUMBER },
+                  conceptNudge: { type: Type.STRING },
+                  modelAnswer: { type: Type.STRING },
+                  keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  mcqOptions: { type: Type.ARRAY, items: { type: Type.STRING } }
+                },
+                required: ["text", "marks", "conceptNudge", "modelAnswer", "keywords"]
+              }
             }
           }
-        }
-      });
+        });
 
-      const raw = cleanJsonText(response.text || "[]");
-      const parsed = JSON.parse(raw || "[]");
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        setCached(cacheKey, parsed);
-        return res.json(parsed);
+        const raw = cleanJsonText(response.text || "[]");
+        const parsed = JSON.parse(raw || "[]");
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const normalized = parsed.map((q: any) => ({
+            ...q,
+            marks: questionType === "long" || questionType === "numerical" ? 7 : questionType === "short" ? 2 : 1,
+            keywords: Array.isArray(q.keywords) && q.keywords.length > 0 ? q.keywords : ["Definition", "Core Concept", "Example"],
+            conceptNudge: q.conceptNudge || `Focus on the core principle and real application of ${cleanSubject}.`
+          }));
+          setCached(cacheKey, normalized);
+          return normalized;
+        }
+        return null;
+      })();
+
+      // Guarantee <= 5s response ceiling; if Gemini takes longer, return smart subject fallback immediately while background task populates cache
+      const TIMEOUT_SENTINEL = Symbol("TIMEOUT");
+      const raceResult = await Promise.race([
+        geminiGenerationPromise,
+        new Promise<typeof TIMEOUT_SENTINEL>((resolve) => setTimeout(() => resolve(TIMEOUT_SENTINEL), 5000))
+      ]);
+
+      if (raceResult && raceResult !== TIMEOUT_SENTINEL && Array.isArray(raceResult) && raceResult.length > 0) {
+        return res.json(raceResult);
       }
 
-      res.json(parsed);
+      if (raceResult === TIMEOUT_SENTINEL) {
+        geminiGenerationPromise.catch(() => {});
+      }
+
+      const fallback = buildFallbackQuestions();
+      if (raceResult !== TIMEOUT_SENTINEL) {
+        setCached(cacheKey, fallback);
+      }
+      return res.json(fallback);
     } catch (error: any) {
-      console.info("[Questions Generator]: Utilizing academic question synthesizer.");
-      const fallbackQuestions = [
-        {
-          text: `Explain the fundamental mathematical model and core structural architecture of ${topics[0] || subject}. State all boundary conditions.`,
-          marks: questionType === 'long' ? 7 : 2,
-          modelAnswer: `Covers rigorous definition, state invariants, operational bounds, and memory layout constraints.`,
-          keywords: ["Architecture", "Invariant", "Memory Bounds", "Complexity"]
-        },
-        {
-          text: `Derive the time and space complexity formulations for ${topics[1] || subject} using asymptotic Big-O notations. Show recurrence relation steps.`,
-          marks: questionType === 'long' ? 7 : 3,
-          modelAnswer: `Derives Master Theorem parameters T(n) = aT(n/b) + f(n) and explains worst-case recursion tree expansion.`,
-          keywords: ["Time Complexity", "Recurrence Relation", "Master Theorem", "Big-O"]
-        },
-        {
-          text: `Perform a detailed comparative analysis between static and dynamic representations in ${subject}. Formulate trade-offs for latency vs memory.`,
-          marks: questionType === 'long' ? 7 : 2,
-          modelAnswer: `Static variants maximize cache hit ratio and predictability, while dynamic structures optimize memory allocation under unpredictable workloads.`,
-          keywords: ["Cache Locality", "Latency", "Memory Overhead", "Trade-offs"]
-        },
-        {
-          text: `Formulate an optimized algorithm addressing high-load throughput bottlenecks in ${topics[2] || subject}.`,
-          marks: 7,
-          modelAnswer: `Incorporates lock-free primitives, buffer batching, and index amortization to maintain high concurrency.`,
-          keywords: ["Optimization", "Throughput", "Concurrency", "Amortized Analysis"]
-        }
-      ];
-      res.json(fallbackQuestions);
+      console.info("[Questions Generator]: Utilizing fast academic question synthesizer.");
+      const fallback = buildFallbackQuestions();
+      setCached(cacheKey, fallback);
+      res.json(fallback);
     }
   });
 
-  // 3. Evaluator Agent API with AI Predictor (AI vs Human ratio analysis) & Required Score
+  // 3. Evaluator & Answer Coach API (Marks Breakdown & Gap-Filler, zero AI detector)
   app.post("/api/gemini/evaluate", geminiApiLimiter, async (req, res) => {
-    const { question = "", modelAnswer = "", userAnswer = "", keywords = [] } = req.body;
-    try {
-      const prompt = `You are a dual-capacity expert university examiner AND an advanced AI text forensic detector.
-Evaluate the student's answer for an examination question, AND analyze the student's answer to predict whether it was written by a human or generated by an AI model (such as ChatGPT, Claude, Gemini, etc.).
+    const {
+      question = "",
+      modelAnswer = "",
+      userAnswer = "",
+      keywords = [],
+      marks = 2,
+      questionType = "short"
+    } = req.body;
+    const questionMarks =
+      questionType === "long" || questionType === "numerical"
+        ? 7
+        : questionType === "mcq"
+          ? 1
+          : questionType === "short"
+            ? 2
+            : Number(marks) || 2;
 
-Question: "${question}"
-Model Answer: "${modelAnswer}"
+    const buildFallbackEvaluation = () => {
+      const userText = String(userAnswer || "").trim();
+      const kwList: string[] = Array.isArray(keywords) ? keywords : [];
+      const matchedKw = kwList.filter((kw) => userText.toLowerCase().includes(kw.toLowerCase()));
+      const missingKw = kwList.filter((kw) => !userText.toLowerCase().includes(kw.toLowerCase()));
+
+      const kwRatio = kwList.length > 0 ? matchedKw.length / kwList.length : 0.6;
+      const targetChars = questionType === "long" ? 700 : questionType === "numerical" ? 300 : questionType === "mcq" ? 20 : 180;
+      const lengthFactor = Math.min(1, userText.length / targetChars);
+      const computedScore = Math.min(10, Math.max(1.5, Math.round((kwRatio * 6 + lengthFactor * 3.5 + 0.5) * 10) / 10));
+      const obtainedMarks =
+        questionType === "mcq"
+          ? computedScore >= 5 ? 1 : 0
+          : Math.min(questionMarks, Math.max(0.5, Math.round(((computedScore / 10) * questionMarks) * 2) / 2));
+      const requiredScore = 4.0;
+
+      const coveredPoints = matchedKw.length > 0
+        ? matchedKw.map((k) => `Correctly included key concept: ${k}`)
+        : userText.length > 25
+          ? ["Attempted core explanation in your own words"]
+          : [];
+
+      const markPerMissing = missingKw.length > 0
+        ? Math.max(0.5, Math.round(((questionMarks - obtainedMarks) / missingKw.length) * 2) / 2)
+        : 0.5;
+
+      const missingPoints = missingKw.length > 0
+        ? missingKw.slice(0, 3).map((k) => ({
+            point: `Include and explain '${k}' with a brief technical example or formula.`,
+            potentialMarks: `+${markPerMissing} Marks`
+          }))
+        : obtainedMarks < questionMarks
+          ? [{
+              point: questionType === "numerical"
+                ? "Show explicit intermediate substitution steps and final units clearly."
+                : "Add a crisp real-world example or structured bullet breakdown for full credit.",
+              potentialMarks: `+${Math.max(0.5, Math.round((questionMarks - obtainedMarks) * 2) / 2)} Marks`
+            }]
+          : [];
+
+      const upgradedAnswerSuggestion = missingKw.length > 0
+        ? `Keep your opening phrasing ("${userText.slice(0, 90)}${userText.length > 90 ? "..." : ""}"), and immediately follow it with a clear bullet covering ${missingKw.slice(0, 2).join(" and ")} plus one concrete exam example to secure ${questionMarks}/${questionMarks} marks.`
+        : `Tighten your response into crisp numbered points highlighting ${kwList.slice(0, 3).join(", ")} and conclude with a 1-line practical example.`;
+
+      const masteryPct = Math.round((obtainedMarks / questionMarks) * 100);
+      return {
+        score: computedScore,
+        obtainedMarks,
+        questionMarks,
+        requiredScore,
+        requiredDistinctionScore: 7.5,
+        maxScore: 10,
+        isPassed: computedScore >= requiredScore,
+        scoreGap: Math.round((computedScore - requiredScore) * 10) / 10,
+        coveredPoints,
+        missingPoints,
+        upgradedAnswerSuggestion,
+        idealUniversityAnswer: modelAnswer || "Provide a crisp definition, structured key points, governing formula/architecture, and a real-world example.",
+        feedback: `Allotted ${obtainedMarks}/${questionMarks} marks (${masteryPct}% mastery). Matched ${matchedKw.length} of ${kwList.length || 0} key exam concepts.`
+      };
+    };
+
+    try {
+      const prompt = `You are a supportive university exam coach evaluating a student's practice answer.
+Question (${questionMarks} Marks, type: ${questionType}): "${question}"
+Model Answer Reference: "${modelAnswer}"
 Mandatory Key Terms: ${(keywords || []).join(", ")}
 Student Answer: "${userAnswer}"
 
-Tasks:
-1. Provide a score (0 to 10) based on university academic rubrics.
-2. Provide requiredScore (standard university passing score threshold, strictly 4.0 out of 10).
-3. Provide requiredDistinctionScore (strictly 7.5 out of 10).
-4. Provide maxScore (strictly 10).
-5. Provide isPassed (boolean, true if score >= requiredScore).
-6. Provide scoreGap (number, score - requiredScore).
-7. Provide constructive markdown feedback detailing strengths, missing key concepts, and mark deductions.
-8. AI Answer Predictor:
-   - Determine the percentage ratio of the answer that exhibits AI patterns vs Human patterns (aiPercentage + humanPercentage MUST equal 100).
-   - If the answer exhibits formulaic LLM transitions, uniform sentence cadence, repetitive adjectives, textbook hedging, or unnatural polish: predict high aiPercentage (e.g. 70-100%).
-   - If the answer exhibits natural student phrasing, authentic syntax variations, personal shorthand/style, organic grammatical nuances: predict high humanPercentage (e.g. 70-100%).
-   - If mixed/hybrid: balanced ratio (e.g. 45% AI : 55% Human).
-   - Verdict: 'AI-Generated' (aiPercentage >= 65), 'Human-Written' (humanPercentage >= 65), or 'Mixed / AI-Assisted' (otherwise).
-   - Ratio string format: "e.g. 82% AI : 18% Human".
-   - Confidence score: 0 to 100.
-   - Analysis: 1-2 sentence explanation of why this verdict was reached.
-   - Indicators: burstiness (e.g. "Low (Uniform AI rhythm)" or "High (Human sentence variation)"), perplexity ("Predictable model tokens" or "Organic human perplexity"), and 2-3 stylistic markers.`;
+Return a constructive Marks Breakdown & Gap-Filler JSON:
+1. score: 0 to 10 mastery score
+2. obtainedMarks: score scaled to ${questionMarks} marks (e.g. nearest 0.5)
+3. questionMarks: ${questionMarks}
+4. requiredScore: 4.0
+5. requiredDistinctionScore: 7.5
+6. maxScore: 10
+7. isPassed: boolean (score >= 4.0)
+8. scoreGap: score - 4.0
+9. coveredPoints: 1-4 short strings listing concepts/keywords the student covered well
+10. missingPoints: array of { point, potentialMarks } explaining exact missing points/examples and mark value (e.g. "+0.5 Marks", "+1 Mark")
+11. upgradedAnswerSuggestion: concrete guidance showing how to rewrite the student's exact draft phrasing to earn full ${questionMarks}/${questionMarks} marks
+12. idealUniversityAnswer: clean, point-wise ideal university answer formatted specifically for paper-checkers (with bullet points/steps)
+13. feedback: 1-2 sentence overall coaching summary citing marks out of ${questionMarks} (e.g., X/${questionMarks} marks), NOT out of 10`;
 
       const response = await generateWithModelFallback({
+        preferFast: true,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -504,39 +859,42 @@ Tasks:
             type: Type.OBJECT,
             properties: {
               score: { type: Type.NUMBER },
+              obtainedMarks: { type: Type.NUMBER },
+              questionMarks: { type: Type.NUMBER },
               requiredScore: { type: Type.NUMBER },
               requiredDistinctionScore: { type: Type.NUMBER },
               maxScore: { type: Type.NUMBER },
               isPassed: { type: Type.BOOLEAN },
               scoreGap: { type: Type.NUMBER },
-              feedback: { type: Type.STRING },
-              aiPrediction: {
-                type: Type.OBJECT,
-                properties: {
-                  isAiGenerated: { type: Type.BOOLEAN },
-                  aiPercentage: { type: Type.NUMBER },
-                  humanPercentage: { type: Type.NUMBER },
-                  verdict: { type: Type.STRING },
-                  confidence: { type: Type.NUMBER },
-                  ratio: { type: Type.STRING },
-                  analysis: { type: Type.STRING },
-                  indicators: {
-                    type: Type.OBJECT,
-                    properties: {
-                      burstiness: { type: Type.STRING },
-                      perplexity: { type: Type.STRING },
-                      stylisticMarkers: { 
-                        type: Type.ARRAY, 
-                        items: { type: Type.STRING } 
-                      }
-                    },
-                    required: ["burstiness", "perplexity", "stylisticMarkers"]
-                  }
-                },
-                required: ["isAiGenerated", "aiPercentage", "humanPercentage", "verdict", "confidence", "ratio", "analysis", "indicators"]
-              }
+              coveredPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+              missingPoints: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    point: { type: Type.STRING },
+                    potentialMarks: { type: Type.STRING }
+                  },
+                  required: ["point", "potentialMarks"]
+                }
+              },
+              upgradedAnswerSuggestion: { type: Type.STRING },
+              idealUniversityAnswer: { type: Type.STRING },
+              feedback: { type: Type.STRING }
             },
-            required: ["score", "requiredScore", "maxScore", "isPassed", "feedback", "aiPrediction"]
+            required: [
+              "score",
+              "obtainedMarks",
+              "questionMarks",
+              "requiredScore",
+              "maxScore",
+              "isPassed",
+              "coveredPoints",
+              "missingPoints",
+              "upgradedAnswerSuggestion",
+              "idealUniversityAnswer",
+              "feedback"
+            ]
           }
         }
       });
@@ -545,109 +903,28 @@ Tasks:
       const parsed = JSON.parse(raw || "{}");
       if (typeof parsed.score === "number") {
         if (!parsed.requiredScore) parsed.requiredScore = 4.0;
+        if (!parsed.requiredDistinctionScore) parsed.requiredDistinctionScore = 7.5;
         if (!parsed.maxScore) parsed.maxScore = 10;
+        parsed.questionMarks = questionMarks;
+        if (typeof parsed.obtainedMarks !== "number") {
+          parsed.obtainedMarks =
+            questionType === "mcq"
+              ? parsed.score >= 5 ? 1 : 0
+              : Math.min(questionMarks, Math.round(((parsed.score / 10) * questionMarks) * 2) / 2);
+        } else {
+          parsed.obtainedMarks = Math.min(questionMarks, Math.max(0, parsed.obtainedMarks));
+        }
         if (typeof parsed.isPassed !== "boolean") parsed.isPassed = parsed.score >= parsed.requiredScore;
         if (typeof parsed.scoreGap !== "number") parsed.scoreGap = Math.round((parsed.score - parsed.requiredScore) * 10) / 10;
+        if (!Array.isArray(parsed.coveredPoints)) parsed.coveredPoints = [];
+        if (!Array.isArray(parsed.missingPoints)) parsed.missingPoints = [];
+        if (!parsed.idealUniversityAnswer) parsed.idealUniversityAnswer = modelAnswer;
         return res.json(parsed);
       }
       throw new Error("Invalid response format from evaluator model");
     } catch (error: any) {
-      console.warn("AI Model evaluation fallback triggered:", error?.message);
-      // Resilient fallback calculation so answer submission NEVER fails
-      const userText = String(userAnswer || "").trim();
-      const matchedKw = (keywords || []).filter((kw: string) => userText.toLowerCase().includes(kw.toLowerCase()));
-      const kwRatio = (keywords && keywords.length > 0) ? (matchedKw.length / keywords.length) : 0.6;
-      const lengthFactor = Math.min(1, userText.length / 250);
-      const computedScore = Math.min(10, Math.max(1, Math.round((kwRatio * 6 + lengthFactor * 3.5 + 0.5) * 10) / 10));
-      const requiredScore = 4.0;
-      
-      const aiMarkers = ["furthermore", "moreover", "in conclusion", "it is important to note", "delves into", "testament"];
-      const matchedAi = aiMarkers.filter(m => userText.toLowerCase().includes(m)).length;
-      const aiPercent = Math.min(95, Math.max(10, matchedAi * 25 + (userText.length > 500 && userText.includes(":") ? 30 : 15)));
-      const humanPercent = 100 - aiPercent;
-
-      res.json({
-        score: computedScore,
-        requiredScore: requiredScore,
-        requiredDistinctionScore: 7.5,
-        maxScore: 10,
-        isPassed: computedScore >= requiredScore,
-        scoreGap: Math.round((computedScore - requiredScore) * 10) / 10,
-        feedback: `### University Marking Assessment\n- **Obtained Score:** ${computedScore}/10 (Required Passing Threshold: ${requiredScore}/10)\n- **Key Terms Matched:** ${matchedKw.length} of ${keywords.length || 0} (${matchedKw.join(", ") || "None"})\n- **Feedback:** ${computedScore >= requiredScore ? "Meets university passing criteria. Good conceptual structure." : "Score is currently below the required 4.0 passing mark. Include required definitions and formulas to achieve full credit."}`,
-        aiPrediction: {
-          isAiGenerated: aiPercent >= 65,
-          aiPercentage: aiPercent,
-          humanPercentage: humanPercent,
-          verdict: aiPercent >= 65 ? "AI-Generated" : humanPercent >= 65 ? "Human-Written" : "Mixed / AI-Assisted",
-          confidence: 85,
-          ratio: `${aiPercent}% AI : ${humanPercent}% Human`,
-          analysis: aiPercent >= 65 
-            ? "Contains characteristic uniform sentence structures and formulaic transitional phrasing common in large language models."
-            : "Demonstrates spontaneous human sentence structures, authentic academic voice, and organic terminology usage.",
-          indicators: {
-            burstiness: aiPercent >= 65 ? "Low (Uniform sentence cadence)" : "High (Natural human sentence variation)",
-            perplexity: aiPercent >= 65 ? "Predictable token sequences" : "Organic student vocabulary choice",
-            stylisticMarkers: matchedAi > 0 ? ["Formal transitional adverbs", "Structured academic headings"] : ["Direct conceptual explanations", "Organic student syntax"]
-          }
-        }
-      });
-    }
-  });
-
-  // 3b. Standalone AI Answer Predictor API
-  app.post("/api/gemini/predict-ai-content", geminiApiLimiter, async (req, res) => {
-    try {
-      const { text, question = "" } = req.body;
-      if (!text || !text.trim()) {
-        return res.status(400).json({ error: "Text is required for AI prediction" });
-      }
-
-      const prompt = `You are a forensic AI text detector.
-Analyze the following student answer text and determine whether it was generated by an AI model or written by a human.
-${question ? `Context Question: "${question}"` : ""}
-Text to analyze: "${text}"
-
-Calculate the exact percentage ratio between AI and Human authorship (aiPercentage + humanPercentage = 100).
-Provide verdict ('AI-Generated' | 'Human-Written' | 'Mixed / AI-Assisted'), ratio string ("X% AI : Y% Human"), confidence (0-100), concise analysis, and stylometric indicators.`;
-
-      const response = await generateWithModelFallback({
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              isAiGenerated: { type: Type.BOOLEAN },
-              aiPercentage: { type: Type.NUMBER },
-              humanPercentage: { type: Type.NUMBER },
-              verdict: { type: Type.STRING },
-              confidence: { type: Type.NUMBER },
-              ratio: { type: Type.STRING },
-              analysis: { type: Type.STRING },
-              indicators: {
-                type: Type.OBJECT,
-                properties: {
-                  burstiness: { type: Type.STRING },
-                  perplexity: { type: Type.STRING },
-                  stylisticMarkers: { 
-                    type: Type.ARRAY, 
-                    items: { type: Type.STRING } 
-                  }
-                },
-                required: ["burstiness", "perplexity", "stylisticMarkers"]
-              }
-            },
-            required: ["isAiGenerated", "aiPercentage", "humanPercentage", "verdict", "confidence", "ratio", "analysis", "indicators"]
-          }
-        }
-      });
-
-      const raw = cleanJsonText(response.text || "{}");
-      const parsed = JSON.parse(raw || "{}");
-      res.json(parsed);
-    } catch (error: any) {
-      console.error("Error in predict-ai-content:", error);
-      res.status(500).json({ error: error.message || "Failed to predict AI content" });
+      console.warn("AI Coach evaluation fallback triggered:", error?.message);
+      res.json(buildFallbackEvaluation());
     }
   });
 
@@ -972,10 +1249,54 @@ Provide clear, fast, technical explanations with Markdown and standard math form
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    process.env.DISABLE_HMR = "true";
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false, ws: false },
       appType: "spa",
     });
+
+    // Prevent Vite client from attempting a blocked HMR WebSocket connection in preview iframes
+    app.get("/@vite/client", (_req, res) => {
+      res.type("application/javascript").send(`
+const sheetsMap = new Map();
+export function updateStyle(id, content) {
+  let style = sheetsMap.get(id);
+  if (!style) {
+    style = document.createElement("style");
+    style.setAttribute("type", "text/css");
+    style.setAttribute("data-vite-dev-id", id);
+    style.textContent = content;
+    document.head.appendChild(style);
+    sheetsMap.set(id, style);
+  } else {
+    style.textContent = content;
+  }
+}
+export function removeStyle(id) {
+  const style = sheetsMap.get(id);
+  if (style) {
+    style.remove();
+    sheetsMap.delete(id);
+  }
+}
+export function createHotContext() {
+  return {
+    data: {},
+    accept() {},
+    dispose() {},
+    prune() {},
+    decline() {},
+    invalidate() {},
+    on() {},
+    off() {},
+    send() {}
+  };
+}
+export function injectQuery(url) { return url; }
+export class ErrorOverlay {}
+`);
+    });
+
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(__dirname, "dist");
