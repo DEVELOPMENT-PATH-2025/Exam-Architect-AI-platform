@@ -218,9 +218,15 @@ export default function MockExamSimulator({
   const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
   const [absenceWarnings, setAbsenceWarnings] = useState(0);
   const [personPresentStatus, setPersonPresentStatus] = useState<'checking' | 'present' | 'violation'>('checking');
+  const [activeCamViolationLabel, setActiveCamViolationLabel] = useState<string | null>(null);
+  const [setupCameraAlert, setSetupCameraAlert] = useState<{
+    status: 'checking' | 'ok' | 'shutter_blocked' | 'other_person_detected' | 'object_detected' | 'person_absent';
+    label: string;
+    reason: string;
+  } | null>(null);
   const [absenceModal, setAbsenceModal] = useState<{
     count: number;
-    violationType: 'shutter_blocked' | 'unauthorized_object' | 'person_absent';
+    violationType: 'shutter_blocked' | 'other_person_detected' | 'object_detected' | 'person_absent';
     title: string;
     reason: string;
     personReturned: boolean;
@@ -298,6 +304,8 @@ export default function MockExamSimulator({
     setCamActive(false);
     setMicActive(false);
     setMicLevel(0);
+    setSetupCameraAlert(null);
+    setActiveCamViolationLabel(null);
   };
 
   useEffect(() => {
@@ -542,10 +550,15 @@ export default function MockExamSimulator({
     };
   }, [phase, paper]);
 
-  // Monitor camera privacy shutter / blocked lens, unauthorized objects (phone/book/2nd person), & candidate presence:
-  // 3 warning popups on screen across any violation scenario, and auto-submit on 4th attempt.
+  // Monitor camera in BOTH Setup preview box (live pre-check warnings) AND Active Fullscreen Exam (3 warnings -> 4th auto-submit):
+  // Detects: Privacy Shutter Closed, Other Person Detected (2+ people), Object Detected (any object apart from face), & Not Present on Camera.
   useEffect(() => {
-    if (phase !== 'writing') return;
+    const isSetupLive = phase === 'setup' && camActive;
+    const isWritingLive = phase === 'writing';
+    if (!isSetupLive && !isWritingLive) return;
+
+    let cancelled = false;
+    presenceCheckBusyRef.current = false;
 
     const canvas = document.createElement('canvas');
     canvas.width = 320;
@@ -553,15 +566,40 @@ export default function MockExamSimulator({
     const ctx = canvas.getContext('2d');
     let lastAiCheckAt = 0;
 
-    const handleViolationDetected = (
-      vType: 'shutter_blocked' | 'unauthorized_object' | 'person_absent',
-      reasonText: string
-    ) => {
+    type ViolationKind = 'shutter_blocked' | 'other_person_detected' | 'object_detected' | 'person_absent';
+
+    const labelMap: Record<ViolationKind, string> = {
+      shutter_blocked: 'Privacy Shutter Closed',
+      other_person_detected: 'Other Person Detected',
+      object_detected: 'Object Detected',
+      person_absent: 'Not on Camera'
+    };
+
+    const titleMap: Record<ViolationKind, string> = {
+      shutter_blocked: 'Privacy Shutter Closed / Remove Object!',
+      other_person_detected: 'Other Person Detected!',
+      object_detected: 'Object Detected!',
+      person_absent: 'Not Visible on Camera!'
+    };
+
+    const handleViolationDetected = (vType: ViolationKind, reasonText: string) => {
+      if (cancelled) return;
+
+      if (isSetupLive) {
+        setSetupCameraAlert({
+          status: vType,
+          label: labelMap[vType],
+          reason: reasonText
+        });
+        return;
+      }
+
       const now = Date.now();
       const wasInViolation = inViolationStateRef.current;
       const cooldownMs = wasInViolation ? 3200 : 1200;
 
       setPersonPresentStatus('violation');
+      setActiveCamViolationLabel(labelMap[vType]);
 
       // Respect short cooldown so dual local+AI loops don't double-strike within 1 second
       if (now - lastViolationAtRef.current < cooldownMs) {
@@ -573,17 +611,6 @@ export default function MockExamSimulator({
       absenceCountRef.current += 1;
       const nextWarn = absenceCountRef.current;
       setAbsenceWarnings(nextWarn);
-
-      const labelMap: Record<typeof vType, string> = {
-        shutter_blocked: 'Privacy Shutter Closed / Camera Blocked',
-        unauthorized_object: 'Unauthorized Object / 2nd Person Detected',
-        person_absent: 'Candidate Not Present on Camera'
-      };
-      const titleMap: Record<typeof vType, string> = {
-        shutter_blocked: 'Remove Object or Open Camera Privacy Shutter!',
-        unauthorized_object: 'Unauthorized Object Detected on Camera!',
-        person_absent: 'Person Not Visible on Camera!'
-      };
 
       const entry = {
         strike: nextWarn,
@@ -611,8 +638,8 @@ export default function MockExamSimulator({
     };
 
     const runProctorMonitorTick = async () => {
-      if (disqualifiedLockRef.current || presenceCheckBusyRef.current) return;
-      const video = proctorVideoRef.current;
+      if (cancelled || disqualifiedLockRef.current || presenceCheckBusyRef.current) return;
+      const video = isSetupLive ? setupVideoRef.current : proctorVideoRef.current;
       if (!video || video.readyState < 2 || video.videoWidth === 0 || !ctx) return;
 
       presenceCheckBusyRef.current = true;
@@ -626,7 +653,7 @@ export default function MockExamSimulator({
         let edgeCount = 0;
         let prevLuma = 0;
         let count = 0;
-        const step = 16; // sample every 4th pixel across width*height
+        const step = 16;
         for (let i = 0; i < pixels.length; i += step) {
           const luma = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
           sumLuma += luma;
@@ -642,7 +669,6 @@ export default function MockExamSimulator({
         const stdDev = Math.sqrt(variance);
         const edgeRatio = count > 1 ? edgeCount / (count - 1) : 0;
 
-        // Laptop privacy shutters (black/gray/red sliders) or covered lenses have near-zero brightness or near-zero spatial texture
         const isShutterClosedLocally = avgLuma < 16 || (stdDev < 10 && edgeRatio < 0.025);
         if (isShutterClosedLocally) {
           handleViolationDetected(
@@ -652,12 +678,12 @@ export default function MockExamSimulator({
           return;
         }
 
-        // 2. Run Gemini Vision check every ~2.4s to catch:
-        //    - Object/shutter partially blocking lens
-        //    - Unauthorized objects (phone, book, notes, second person)
-        //    - Candidate not present on camera (even briefly)
+        // 2. Run Gemini Vision check every ~2.0s to detect:
+        //    - Other person (2+ people in frame -> "Other Person Detected")
+        //    - Any object brought apart from face ("Object Detected")
+        //    - Candidate not present on camera ("Not on Camera")
         const now = Date.now();
-        if (now - lastAiCheckAt < 2300) {
+        if (now - lastAiCheckAt < 1900) {
           return;
         }
         lastAiCheckAt = now;
@@ -665,31 +691,45 @@ export default function MockExamSimulator({
         const frameDataUrl = canvas.toDataURL('image/jpeg', 0.65);
         const res = await proctorPresenceAgent(frameDataUrl, 'image/jpeg');
 
-        if (disqualifiedLockRef.current) return;
+        if (cancelled || disqualifiedLockRef.current) return;
         if (res.fallback) return;
 
         if (res.shutterClosedOrBlocked || res.violationType === 'shutter_blocked') {
           handleViolationDetected(
             'shutter_blocked',
             res.reason ||
-              'Camera privacy shutter closed or lens blocked. Open your camera or remove any object immediately.'
+              'Camera privacy shutter closed or lens blocked. Remove any object or open your camera immediately.'
           );
-        } else if (res.unauthorizedObjectOrPerson || res.violationType === 'unauthorized_object') {
+        } else if (res.otherPersonDetected || res.violationType === 'other_person_detected') {
+          handleViolationDetected(
+            'other_person_detected',
+            res.reason || 'Other person detected on camera (two or more people visible). Only you may be on camera.'
+          );
+        } else if (res.objectDetected || res.violationType === 'object_detected') {
           const itemLabel = res.detectedItem && res.detectedItem !== 'none' ? ` (${res.detectedItem})` : '';
           handleViolationDetected(
-            'unauthorized_object',
+            'object_detected',
             res.reason ||
-              `Unauthorized object or extra person${itemLabel} detected on camera. Only you may appear in the camera frame.`
+              `Object detected${itemLabel} apart from your face. Remove all objects from camera view immediately.`
           );
         } else if (!res.personPresent || res.violationType === 'person_absent') {
           handleViolationDetected(
             'person_absent',
-            res.reason || 'Candidate not detected on camera. Please stay visible in front of your camera.'
+            res.reason || 'You are not visible on camera. Keep your face centered on camera.'
           );
         } else {
-          inViolationStateRef.current = false;
-          setPersonPresentStatus('present');
-          setAbsenceModal((prev) => (prev ? { ...prev, personReturned: true } : null));
+          if (isSetupLive) {
+            setSetupCameraAlert({
+              status: 'ok',
+              label: 'Single Person Verified',
+              reason: 'Only your face is visible — no extra person or object detected.'
+            });
+          } else {
+            inViolationStateRef.current = false;
+            setPersonPresentStatus('present');
+            setActiveCamViolationLabel(null);
+            setAbsenceModal((prev) => (prev ? { ...prev, personReturned: true } : null));
+          }
         }
       } catch {
         // Keep exam running cleanly on transient frame read error
@@ -698,14 +738,16 @@ export default function MockExamSimulator({
       }
     };
 
-    const initialTimer = window.setTimeout(runProctorMonitorTick, 1000);
-    const intervalId = window.setInterval(runProctorMonitorTick, 1100);
+    const initialTimer = window.setTimeout(runProctorMonitorTick, 700);
+    const intervalId = window.setInterval(runProctorMonitorTick, 1000);
 
     return () => {
+      cancelled = true;
+      presenceCheckBusyRef.current = false;
       window.clearTimeout(initialTimer);
       window.clearInterval(intervalId);
     };
-  }, [phase]);
+  }, [phase, camActive]);
 
   // Live 3-Hour Countdown Timer (runs continuously in proctored mode)
   useEffect(() => {
@@ -1194,7 +1236,14 @@ export default function MockExamSimulator({
           {/* Proctoring Camera & Mic Pre-Check Box */}
           <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5 flex flex-col md:flex-row items-center justify-between gap-5">
             <div className="flex items-center gap-4 w-full md:w-auto">
-              <div className="w-36 h-24 rounded-xl bg-slate-900 border border-slate-300 overflow-hidden relative flex items-center justify-center shrink-0">
+              <div
+                className={cn(
+                  'w-36 h-24 rounded-xl bg-slate-900 border-2 overflow-hidden relative flex items-center justify-center shrink-0',
+                  setupCameraAlert && setupCameraAlert.status !== 'ok' && setupCameraAlert.status !== 'checking'
+                    ? 'border-rose-500'
+                    : 'border-slate-300'
+                )}
+              >
                 {camActive ? (
                   <video ref={setupVideoRef} muted playsInline autoPlay className="w-full h-full object-cover" />
                 ) : (
@@ -1203,15 +1252,23 @@ export default function MockExamSimulator({
                 <span
                   className={cn(
                     'absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded text-[9px] font-black uppercase',
-                    camActive ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300'
+                    !camActive
+                      ? 'bg-slate-800 text-slate-300'
+                      : setupCameraAlert && setupCameraAlert.status !== 'ok' && setupCameraAlert.status !== 'checking'
+                        ? 'bg-rose-600 text-white'
+                        : 'bg-emerald-600 text-white'
                   )}
                 >
-                  {camActive ? 'CAM LIVE' : 'CAM OFF'}
+                  {!camActive
+                    ? 'CAM OFF'
+                    : setupCameraAlert && setupCameraAlert.status !== 'ok' && setupCameraAlert.status !== 'checking'
+                      ? setupCameraAlert.label
+                      : 'CAM LIVE'}
                 </span>
               </div>
 
               <div className="space-y-2">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   {proctorStatus === 'ready' ? (
                     <ShieldCheck className="w-4 h-4 text-emerald-600" />
                   ) : (
@@ -1223,6 +1280,29 @@ export default function MockExamSimulator({
                       : 'Verify Camera & Microphone Before Starting'}
                   </span>
                 </div>
+
+                {/* Live Pre-Check AI Detection Status (Object / Other Person / Not on Camera / Shutter) */}
+                {camActive && setupCameraAlert && (
+                  <div
+                    className={cn(
+                      'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-black border',
+                      setupCameraAlert.status === 'ok'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-rose-50 text-rose-800 border-rose-300 animate-pulse'
+                    )}
+                  >
+                    {setupCameraAlert.status === 'ok' ? (
+                      <UserCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                    )}
+                    <span>
+                      {setupCameraAlert.status === 'ok'
+                        ? setupCameraAlert.label
+                        : `WARNING — ${setupCameraAlert.label}: ${setupCameraAlert.reason}`}
+                    </span>
+                  </div>
+                )}
 
                 {/* Live Mic Level Meter */}
                 <div className="flex items-center gap-2">
@@ -1626,14 +1706,14 @@ export default function MockExamSimulator({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-100 overflow-y-auto px-4 sm:px-8 py-4 sm:py-6">
-      {/* Camera Proctoring Violation Warning Popup Modal (Warnings 1, 2, 3 across Shutter/Object/Absence) */}
+      {/* Camera Proctoring Violation Warning Popup Modal (Warnings 1, 2, 3 across Shutter/Other Person/Object/Absence) */}
       {absenceModal && (
         <div className="fixed inset-0 z-[70] bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl border-2 border-rose-500 shadow-2xl max-w-md w-full p-6 sm:p-7 space-y-5 text-center">
             <div className="w-14 h-14 rounded-2xl bg-rose-100 border border-rose-300 flex items-center justify-center mx-auto">
               {absenceModal.violationType === 'shutter_blocked' ? (
                 <ShieldAlert className="w-8 h-8 text-rose-600" />
-              ) : absenceModal.violationType === 'unauthorized_object' ? (
+              ) : absenceModal.violationType === 'object_detected' ? (
                 <AlertTriangle className="w-8 h-8 text-rose-600" />
               ) : (
                 <UserX className="w-8 h-8 text-rose-600" />
@@ -1642,9 +1722,9 @@ export default function MockExamSimulator({
 
             <div className="space-y-2">
               <span className="inline-block px-3 py-1 rounded-full bg-rose-600 text-white text-[11px] font-black uppercase tracking-widest">
-                Proctoring Alert {absenceModal.count} of 3
+                Proctoring Warning {absenceModal.count} of 3
               </span>
-              <h3 className="text-xl font-black text-slate-900">
+              <h3 className="text-xl font-black text-rose-700">
                 {absenceModal.count === 3
                   ? `FINAL WARNING (3/3): ${absenceModal.title}`
                   : absenceModal.title}
@@ -1739,7 +1819,7 @@ export default function MockExamSimulator({
                 </span>
                 <span
                   className={cn(
-                    'inline-flex items-center gap-1 font-bold',
+                    'inline-flex items-center gap-1 font-bold uppercase',
                     personPresentStatus === 'violation' ? 'text-rose-400' : 'text-emerald-400'
                   )}
                 >
@@ -1750,9 +1830,9 @@ export default function MockExamSimulator({
                   )}
                   <span>
                     {personPresentStatus === 'violation'
-                      ? `CAM ALERT (${absenceWarnings}/3 WARN)`
+                      ? `${activeCamViolationLabel || 'CAM ALERT'} (${absenceWarnings}/3 WARN)`
                       : absenceWarnings > 0
-                        ? `CAM OK (${absenceWarnings}/3 WARN)`
+                        ? `SINGLE PERSON OK (${absenceWarnings}/3 WARN)`
                         : 'SINGLE PERSON OK'}
                   </span>
                 </span>

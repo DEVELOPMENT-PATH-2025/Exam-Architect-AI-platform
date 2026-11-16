@@ -1505,7 +1505,7 @@ Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, c
     message: { error: "Proctoring check rate limit exceeded." }
   });
 
-  // 6C-2. Real-Time Camera Proctoring Check (Shutter/Blocked + Person Presence + Unauthorized Object/2nd Person)
+  // 6C-2. Real-Time Camera Proctoring Check (Shutter/Blocked + Other Person + Object Detected + Candidate Absence)
   app.post("/api/gemini/proctor-presence", proctorPresenceLimiter, async (req, res) => {
     const { imageBase64 = "", mimeType = "image/jpeg" } = req.body || {};
     let cleanImg = String(imageBase64 || "").trim();
@@ -1526,7 +1526,8 @@ Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, c
       return res.json({
         shutterClosedOrBlocked: true,
         personPresent: false,
-        unauthorizedObjectOrPerson: false,
+        otherPersonDetected: false,
+        objectDetected: false,
         violationType: "shutter_blocked",
         detectedItem: "blocked camera",
         reason: "Privacy shutter closed or camera lens blocked. Open shutter or remove object."
@@ -1534,18 +1535,18 @@ Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, c
     }
 
     try {
-      const prompt = `Analyze this live webcam proctoring frame from an online university exam strictly for 3 conditions:
+      const prompt = `Analyze this webcam proctoring frame from an online exam and return strict JSON for these 4 checks:
 1. shutterClosedOrBlocked: true ONLY if a laptop privacy shutter is closed, a finger/cloth/tape covers the lens, or the image is completely solid black/uniformly obstructed.
-2. personPresent: true if a real human candidate (face/head/shoulders) is clearly visible in front of the camera; false if chair is empty, only wall/curtain is shown, or no human is present.
-3. unauthorizedObjectOrPerson: true if a mobile phone/smartphone, book, notebook, printed paper/notes, tablet/second screen, or a second person is visibly held or shown in the camera frame alongside or instead of the candidate. (Normal background furniture, glasses, or clothing do NOT count as unauthorized objects.)
+2. otherPersonDetected: true if MORE THAN ONE human face or person (2+ people, someone standing behind, peeking, or sitting beside the candidate) is visible anywhere in the camera frame.
+3. objectDetected: true if the candidate brings or shows ANY handheld or foreground object apart from their own face/head/neck/normal shirt/eyeglasses/wall background (for example: mobile phone, book, notebook, paper sheet, pen held up, bottle, cup, tablet, calculator, earphones held in hand, watch, card, box, or any foreign object).
+4. personPresent: true if at least one human candidate face/head is visible in front of the camera; false if no human is visible (empty chair, blank wall, curtain).
 
-Set violationType to:
+Set violationType strictly to one of:
 - "shutter_blocked" if shutterClosedOrBlocked is true
-- "unauthorized_object" if unauthorizedObjectOrPerson is true
+- "other_person_detected" if otherPersonDetected is true
+- "object_detected" if objectDetected is true
 - "person_absent" if personPresent is false
-- "none" if only the single candidate is clearly present with no unauthorized objects.
-
-Return strict JSON matching the schema.`;
+- "none" if ONLY 1 candidate face is clearly visible with NO other person and NO extra object.`;
 
       const geminiCheck = generateWithModelFallback({
         preferFast: true,
@@ -1556,22 +1557,24 @@ Return strict JSON matching the schema.`;
           ]
         },
         config: {
-          maxOutputTokens: 120,
+          maxOutputTokens: 140,
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
               shutterClosedOrBlocked: { type: Type.BOOLEAN },
+              otherPersonDetected: { type: Type.BOOLEAN },
+              objectDetected: { type: Type.BOOLEAN },
               personPresent: { type: Type.BOOLEAN },
-              unauthorizedObjectOrPerson: { type: Type.BOOLEAN },
               violationType: { type: Type.STRING },
               detectedItem: { type: Type.STRING },
               reason: { type: Type.STRING }
             },
             required: [
               "shutterClosedOrBlocked",
+              "otherPersonDetected",
+              "objectDetected",
               "personPresent",
-              "unauthorizedObjectOrPerson",
               "violationType",
               "reason"
             ]
@@ -1589,8 +1592,9 @@ Return strict JSON matching the schema.`;
         if (raceResult === TIMEOUT_SENTINEL) geminiCheck.catch(() => {});
         return res.json({
           shutterClosedOrBlocked: false,
+          otherPersonDetected: false,
+          objectDetected: false,
           personPresent: true,
-          unauthorizedObjectOrPerson: false,
           violationType: "none",
           detectedItem: "none",
           fallback: true,
@@ -1600,37 +1604,46 @@ Return strict JSON matching the schema.`;
 
       const parsed = JSON.parse(cleanJsonText(raceResult.text || "{}"));
       const shutter = Boolean(parsed.shutterClosedOrBlocked);
-      const unauth = Boolean(parsed.unauthorizedObjectOrPerson);
+      const otherPerson = Boolean(parsed.otherPersonDetected);
+      const objDetected = Boolean(parsed.objectDetected);
       const present = Boolean(parsed.personPresent);
+
       const vType = shutter
         ? "shutter_blocked"
-        : unauth
-          ? "unauthorized_object"
-          : !present
-            ? "person_absent"
-            : "none";
+        : otherPerson
+          ? "other_person_detected"
+          : objDetected
+            ? "object_detected"
+            : !present
+              ? "person_absent"
+              : "none";
+
+      const itemLabel = parsed.detectedItem && parsed.detectedItem !== "none" ? parsed.detectedItem : "object";
 
       return res.json({
         shutterClosedOrBlocked: shutter,
+        otherPersonDetected: otherPerson,
+        objectDetected: objDetected,
         personPresent: present,
-        unauthorizedObjectOrPerson: unauth,
         violationType: vType,
         detectedItem: parsed.detectedItem || "none",
         reason:
-          parsed.reason ||
-          (vType === "shutter_blocked"
-            ? "Privacy shutter closed or object covering lens. Remove object or open camera."
-            : vType === "unauthorized_object"
-              ? `Unauthorized object (${parsed.detectedItem || "phone/book/extra person"}) detected on camera.`
-              : vType === "person_absent"
-                ? "Candidate not present on camera."
-                : "Single candidate verified on camera.")
+          vType === "shutter_blocked"
+            ? parsed.reason || "Privacy shutter closed or object covering lens. Remove object or open camera."
+            : vType === "other_person_detected"
+              ? `Other Person Detected: ${parsed.reason || "Two or more people visible on camera."}`
+              : vType === "object_detected"
+                ? `Object Detected (${itemLabel}): ${parsed.reason || "Remove any object apart from your face."}`
+                : vType === "person_absent"
+                  ? parsed.reason || "Candidate not present on camera."
+                  : "Single candidate verified on camera."
       });
     } catch {
       return res.json({
         shutterClosedOrBlocked: false,
+        otherPersonDetected: false,
+        objectDetected: false,
         personPresent: true,
-        unauthorizedObjectOrPerson: false,
         violationType: "none",
         detectedItem: "none",
         fallback: true,

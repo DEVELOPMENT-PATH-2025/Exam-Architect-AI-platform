@@ -205,9 +205,10 @@ export const evaluateMockPaperAgent = async (payload: {
 
 export interface ProctorCheckResponse {
   shutterClosedOrBlocked?: boolean;
+  otherPersonDetected?: boolean;
+  objectDetected?: boolean;
   personPresent: boolean;
-  unauthorizedObjectOrPerson?: boolean;
-  violationType?: 'none' | 'shutter_blocked' | 'person_absent' | 'unauthorized_object';
+  violationType?: 'none' | 'shutter_blocked' | 'other_person_detected' | 'object_detected' | 'person_absent';
   detectedItem?: string;
   reason?: string;
   fallback?: boolean;
