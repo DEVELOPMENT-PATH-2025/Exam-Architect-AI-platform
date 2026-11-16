@@ -9,14 +9,17 @@ import {
   TrendingUp,
   Search,
   Check,
-  RotateCcw
+  RotateCcw,
+  Sparkles
 } from 'lucide-react';
 import { generate500QuestionBank } from '../lib/questionBankGenerator';
+import { generateCheatSheetAgent } from '../services/geminiService';
 import { cn } from '../lib/utils';
 
 export default function MockPaperGenerator({ curriculum, onBack }: { curriculum: any, onBack: () => void }) {
   const [subject, setSubject] = useState(curriculum?.subjects[0]?.name || '');
   const [downloading, setDownloading] = useState(false);
+  const [downloadingCheatSheet, setDownloadingCheatSheet] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
   const [selectedUnits, setSelectedUnits] = useState<number[]>([]); // [] = all units (500 Qs)
   const [filterHighProbOnly, setFilterHighProbOnly] = useState(false);
@@ -257,6 +260,188 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
     }
   };
 
+  // One-Click 2-Page Formula & Last-Minute Revision Cheat-Sheet PDF for Selected Units
+  const generateCheatSheetPDF = async () => {
+    setDownloadingCheatSheet(true);
+    try {
+      const sheetData = await generateCheatSheetAgent({
+        subject: selectedSub.name,
+        units: targetUnits.map((u) => ({
+          unitIndex: u.unitIndex,
+          unitLabel: u.unitLabel,
+          title: u.title
+        }))
+      });
+
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const moduleCode = selectedSub.code || 'CORE';
+
+      // PAGE 1 HEADER
+      doc.setFillColor(15, 23, 42);
+      doc.rect(0, 0, 210, 24, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(255, 255, 255);
+      doc.text(`LAST-MINUTE 2-PAGE REVISION CHEAT-SHEET`, 105, 9, { align: 'center' });
+      doc.setFontSize(9.5);
+      doc.setTextColor(96, 165, 250);
+      doc.text(`${selectedSub.name} (${moduleCode}) • ${selectedUnitsBadge}`, 105, 16, { align: 'center' });
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184);
+      doc.text('Definitions • Key Formulas • Comparison Matrix • Must-Use Keywords', 105, 21, { align: 'center' });
+
+      // 1. CORE DEFINITIONS TABLE
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text('1. CORE DEFINITIONS & FUNDAMENTAL CONCEPTS', 10, 31);
+
+      const defRows = (sheetData.definitions || []).slice(0, 10).map((d: any) => [
+        d.unit || 'Unit',
+        d.term || 'Concept',
+        d.definition || ''
+      ]);
+
+      autoTable(doc, {
+        startY: 34,
+        head: [['Unit', 'Concept / Term', 'Crisp 1-Line Exam Definition']],
+        body: defRows,
+        theme: 'grid',
+        headStyles: { fillColor: [30, 58, 138], textColor: [255, 255, 255], fontSize: 7.5, fontStyle: 'bold' },
+        bodyStyles: { fontSize: 7, textColor: [30, 41, 59], cellPadding: 2 },
+        columnStyles: {
+          0: { cellWidth: 16, fontStyle: 'bold', halign: 'center' },
+          1: { cellWidth: 46, fontStyle: 'bold' },
+          2: { cellWidth: 128 }
+        },
+        margin: { left: 10, right: 10 }
+      });
+
+      // 2. KEY FORMULAS & EQUATIONS
+      const afterDefsY = ((doc as any).lastAutoTable?.finalY || 130) + 7;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text('2. KEY FORMULAS, COMPLEXITIES & GOVERNING EQUATIONS', 10, afterDefsY);
+
+      const formulaRows = (sheetData.formulas || []).slice(0, 8).map((f: any) => [
+        f.unit || 'Unit',
+        f.name || 'Formula',
+        f.expression || '',
+        f.usageNote || ''
+      ]);
+
+      autoTable(doc, {
+        startY: afterDefsY + 3,
+        head: [['Unit', 'Formula / Theorem', 'Expression / Bound', 'Exam Usage Tip']],
+        body: formulaRows,
+        theme: 'grid',
+        headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontSize: 7.5, fontStyle: 'bold' },
+        bodyStyles: { fontSize: 7, textColor: [30, 41, 59], cellPadding: 2 },
+        columnStyles: {
+          0: { cellWidth: 16, fontStyle: 'bold', halign: 'center' },
+          1: { cellWidth: 40, fontStyle: 'bold' },
+          2: { cellWidth: 68, fontStyle: 'bold', textColor: [29, 78, 216] },
+          3: { cellWidth: 66 }
+        },
+        margin: { left: 10, right: 10 }
+      });
+
+      // PAGE 2: COMPARISON TABLE & MUST-USE KEYWORDS
+      doc.addPage();
+      doc.setFillColor(248, 250, 252);
+      doc.rect(0, 0, 210, 14, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(37, 99, 235);
+      doc.text(`${selectedSub.name} — Revision Cheat-Sheet (Page 2 of 2: Comparisons & Keywords)`, 105, 9, { align: 'center' });
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text('3. HIGH-YIELD COMPARISON MATRIX (FOR 7-MARK TABLES)', 10, 22);
+
+      const compRows = (sheetData.comparisons || []).slice(0, 6).map((c: any) => [
+        c.aspect || '',
+        c.optionA || '',
+        c.optionB || '',
+        c.examTip || ''
+      ]);
+
+      autoTable(doc, {
+        startY: 25,
+        head: [['Parameter / Aspect', 'Model / Approach A', 'Model / Approach B', 'Paper-Checker Note']],
+        body: compRows,
+        theme: 'grid',
+        headStyles: { fillColor: [30, 58, 138], textColor: [255, 255, 255], fontSize: 7.5, fontStyle: 'bold' },
+        bodyStyles: { fontSize: 7.2, textColor: [30, 41, 59], cellPadding: 2.5 },
+        columnStyles: {
+          0: { cellWidth: 34, fontStyle: 'bold' },
+          1: { cellWidth: 48 },
+          2: { cellWidth: 48 },
+          3: { cellWidth: 60 }
+        },
+        margin: { left: 10, right: 10 }
+      });
+
+      const afterCompY = ((doc as any).lastAutoTable?.finalY || 110) + 8;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(15, 23, 42);
+      doc.text('4. MUST-USE UNIVERSITY KEYWORDS BY UNIT (UNDERLINE IN EXAM)', 10, afterCompY);
+
+      const kwRows = (sheetData.unitKeywords || []).map((uk: any) => [
+        uk.unit || 'Unit',
+        Array.isArray(uk.keywords) ? uk.keywords.join('  •  ') : ''
+      ]);
+
+      autoTable(doc, {
+        startY: afterCompY + 3,
+        head: [['Unit', 'Mandatory Technical Terms & Keywords to Highlight']],
+        body: kwRows,
+        theme: 'grid',
+        headStyles: { fillColor: [6, 95, 70], textColor: [255, 255, 255], fontSize: 7.5, fontStyle: 'bold' },
+        bodyStyles: { fontSize: 7.5, textColor: [15, 23, 42], cellPadding: 3 },
+        columnStyles: {
+          0: { cellWidth: 24, fontStyle: 'bold', halign: 'center' },
+          1: { cellWidth: 166, fontStyle: 'bold' }
+        },
+        margin: { left: 10, right: 10 }
+      });
+
+      // Footers on both pages
+      const totalPages = (doc as any).internal.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+          `ExamArchitect • 2-Page Last-Minute Revision Cheat-Sheet (${selectedUnitsBadge}) • Page ${p} of ${totalPages}`,
+          105,
+          292,
+          { align: 'center' }
+        );
+      }
+
+      const sanitizedSubject = selectedSub.name.replace(/[^a-zA-Z0-9]/g, '_');
+      const fileName = isCustomUnitSelection
+        ? `${sanitizedSubject}_Units_${targetUnitNumbers.join('_')}_Cheat_Sheet.pdf`
+        : `${sanitizedSubject}_2Page_Revision_Cheat_Sheet.pdf`;
+      doc.save(fileName);
+    } catch (err) {
+      console.error('Cheat-Sheet PDF Error:', err);
+    } finally {
+      setDownloadingCheatSheet(false);
+    }
+  };
+
   return (
     <div className="space-y-8 pb-20">
       
@@ -282,45 +467,68 @@ export default function MockPaperGenerator({ curriculum, onBack }: { curriculum:
           </p>
         </div>
 
-        {/* Action Controls */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-          {/* Target Subject Selector */}
-          <div className="relative">
-            <select
-              value={subject}
-              onChange={(e) => {
-                setSubject(e.target.value);
-                setSelectedUnits([]);
-              }}
-              className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer pr-8"
-            >
-              {curriculum.subjects.map((s: any) => (
-                <option key={s.name} value={s.name}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Action Controls */}
+          <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2.5">
+            {/* Target Subject Selector */}
+            <div className="relative">
+              <select
+                value={subject}
+                onChange={(e) => {
+                  setSubject(e.target.value);
+                  setSelectedUnits([]);
+                }}
+                className="w-full sm:w-auto bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer pr-8"
+              >
+                {curriculum.subjects.map((s: any, idx: number) => (
+                  <option key={`${s.code || 'sub'}-${s.name || 'item'}-${idx}`} value={s.name}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          {/* Download Selected Units / Complete 500 Qs PDF Button */}
-          <button
-            disabled={downloading}
-            onClick={generatePDF}
-            className="px-6 py-3.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 whitespace-nowrap"
-          >
-            {downloading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin text-white" />
-                <span>{progressMsg || `Generating ${totalExportQuestions} Qs...`}</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4 text-blue-200" />
-                <span>{downloadButtonLabel}</span>
-              </>
-            )}
-          </button>
-        </div>
+            {/* One-Click 2-Page Formula & Revision Cheat-Sheet PDF */}
+            <button
+              disabled={downloadingCheatSheet || downloading}
+              onClick={generateCheatSheetPDF}
+              className="px-4 py-3.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 whitespace-nowrap"
+            >
+              {downloadingCheatSheet ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                  <span>Building Cheat-Sheet...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 text-amber-400" />
+                  <span>
+                    {isCustomUnitSelection
+                      ? `2-Page Cheat-Sheet (${selectedUnitsBadge})`
+                      : '2-Page Cheat-Sheet PDF'}
+                  </span>
+                </>
+              )}
+            </button>
+
+            {/* Download Selected Units / Complete 500 Qs PDF Button */}
+            <button
+              disabled={downloading || downloadingCheatSheet}
+              onClick={generatePDF}
+              className="px-6 py-3.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 whitespace-nowrap"
+            >
+              {downloading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  <span>{progressMsg || `Generating ${totalExportQuestions} Qs...`}</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 text-blue-200" />
+                  <span>{downloadButtonLabel}</span>
+                </>
+              )}
+            </button>
+          </div>
       </div>
 
       {/* 2. Multi-Select Unit-Wise Metric Cards (5 Units x 100 Qs = 500 Qs) */}

@@ -124,7 +124,9 @@ export const evaluatorAgent = async (
   userAnswer: string,
   keywords: string[],
   marks: number = 2,
-  questionType: 'short' | 'long' | 'numerical' | 'mcq' = 'short'
+  questionType: 'short' | 'long' | 'numerical' | 'mcq' = 'short',
+  handwrittenImageBase64?: string,
+  handwrittenMimeType?: string
 ) => {
   const response = await fetch("/api/gemini/evaluate", {
     method: "POST",
@@ -136,12 +138,113 @@ export const evaluatorAgent = async (
       keywords,
       marks,
       questionType,
+      handwrittenImageBase64,
+      handwrittenMimeType,
     }),
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `Evaluation failed: ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
+export const generateMockPaperAgent = async (payload: {
+  subject: string;
+  code?: string;
+  topics?: string[];
+  universityName?: string;
+  semester?: string;
+}) => {
+  const response = await fetch("/api/gemini/generate-mock-paper", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Mock paper generation failed: ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
+export const evaluateMockPaperAgent = async (payload: {
+  subject: string;
+  submissions: {
+    unitLabel: string;
+    choiceLabel: string;
+    partId: string;
+    partLabel: string;
+    type: string;
+    marks: number;
+    question: string;
+    modelAnswer: string;
+    keywords: string[];
+    userAnswer: string;
+    handwrittenImageBase64?: string;
+    handwrittenMimeType?: string;
+  }[];
+}) => {
+  const response = await fetch("/api/gemini/evaluate-mock-paper", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Mock paper evaluation failed: ${response.statusText}`);
+  }
+
+  return await response.json();
+};
+
+export interface ProctorCheckResponse {
+  shutterClosedOrBlocked?: boolean;
+  personPresent: boolean;
+  unauthorizedObjectOrPerson?: boolean;
+  violationType?: 'none' | 'shutter_blocked' | 'person_absent' | 'unauthorized_object';
+  detectedItem?: string;
+  reason?: string;
+  fallback?: boolean;
+}
+
+export const proctorPresenceAgent = async (
+  imageBase64: string,
+  mimeType: string = "image/jpeg"
+): Promise<ProctorCheckResponse> => {
+  try {
+    const response = await fetch("/api/gemini/proctor-presence", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageBase64, mimeType }),
+    });
+    if (!response.ok) {
+      return { personPresent: true, violationType: 'none', fallback: true };
+    }
+    return await response.json();
+  } catch {
+    return { personPresent: true, violationType: 'none', fallback: true };
+  }
+};
+
+export const generateCheatSheetAgent = async (payload: {
+  subject: string;
+  units: { unitIndex: number; unitLabel: string; title: string }[];
+}) => {
+  const response = await fetch("/api/gemini/cheat-sheet", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Cheat-sheet generation failed: ${response.statusText}`);
   }
 
   return await response.json();

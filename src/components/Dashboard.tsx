@@ -179,7 +179,7 @@ export default function Dashboard({ curriculum, onStartPractice, onGenerateMock 
               const avgScore = sub.averageScore ? `${sub.averageScore}/10 avg` : null;
               return (
                 <div 
-                  key={sub.code || idx}
+                  key={`${sub.code || 'sub'}-${sub.name || 'item'}-${idx}`}
                   onMouseEnter={() => prefetchAllQuestionModules(sub.name, sub.topics || [])}
                   className="p-5 hover:bg-slate-50/80 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                 >

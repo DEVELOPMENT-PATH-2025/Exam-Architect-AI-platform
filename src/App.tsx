@@ -17,7 +17,8 @@ import {
   PenTool,
   Download,
   Menu,
-  X
+  X,
+  Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, signInWithGoogle, db, sendEmailVerification } from './lib/firebase';
@@ -31,6 +32,7 @@ import SyllabusUpload from './components/SyllabusUpload';
 import Dashboard from './components/Dashboard';
 import PracticeSessionUI from './components/PracticeSessionUI';
 import MockPaperGenerator from './components/MockPaperGenerator';
+import MockExamSimulator from './components/MockExamSimulator';
 import AuthUI from './components/AuthUI';
 import WelcomePage from './components/WelcomePage';
 import AIAssistantBot from './components/AIAssistantBot';
@@ -40,7 +42,7 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showAuth, setShowAuth] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'practice' | 'mock'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'practice' | 'mock' | 'simulator'>('dashboard');
   const [selectedSubject, setSelectedSubject] = useState<any>(null);
   const [curriculum, setCurriculum] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
@@ -221,6 +223,8 @@ export default function App() {
         return <PracticeSessionUI subject={selectedSubject} onBack={() => setActiveTab('dashboard')} onUpdateProgress={updateSubjectProgress} />;
       case 'mock':
         return <MockPaperGenerator curriculum={curriculum} onBack={() => setActiveTab('dashboard')} />;
+      case 'simulator':
+        return <MockExamSimulator curriculum={curriculum} onBack={() => setActiveTab('dashboard')} />;
       default:
         return (
           <Dashboard 
@@ -298,6 +302,13 @@ export default function App() {
                   active={activeTab === 'mock'} 
                   disabled={!curriculum}
                   onClick={() => { setActiveTab('mock'); setSidebarOpen(false); }} 
+                />
+                <NavItem 
+                  icon={<Clock className="w-4 h-4" />} 
+                  label="3-Hour Mock Exam Simulator" 
+                  active={activeTab === 'simulator'} 
+                  disabled={!curriculum}
+                  onClick={() => { setActiveTab('simulator'); setSidebarOpen(false); }} 
                 />
               </nav>
 

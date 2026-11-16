@@ -1,7 +1,10 @@
 {
   "name": "ExamArchitect AI",
   "description": "Personalized exam-prep application that transforms university curriculum and textbooks into interactive practice modules using Gemini AI.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

@@ -18,7 +18,9 @@ import {
   Key,
   BookOpen,
   ArrowUpRight,
-  Compass
+  Compass,
+  Camera,
+  Keyboard
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -31,6 +33,8 @@ import {
 import Markdown from 'react-markdown';
 import { cn } from '../lib/utils';
 import PerformanceReport from './PerformanceReport';
+import HandwrittenInputPanel from './HandwrittenInputPanel';
+import DiagramBlueprintCard from './DiagramBlueprintCard';
 
 type QuestionType = 'short' | 'long' | 'numerical' | 'mcq';
 
@@ -112,6 +116,11 @@ export default function PracticeSessionUI({
   const [scores, setScores] = useState<number[]>([]);
   const [activeType, setActiveType] = useState<QuestionType>('short');
 
+  // Dual Response Mode: Keyboard typing + Handwritten Photo / Camera Upload
+  const [responseMode, setResponseMode] = useState<'keyboard' | 'photo'>('keyboard');
+  const [handwrittenImage, setHandwrittenImage] = useState<string | null>(null);
+  const [handwrittenMimeType, setHandwrittenMimeType] = useState<string | null>(null);
+
   // Progressive 3-level Hint state (0 = none, 1 = concept nudge, 2 = blueprint, 3 = keywords)
   const [hintLevel, setHintLevel] = useState<0 | 1 | 2 | 3>(0);
 
@@ -160,6 +169,8 @@ export default function PracticeSessionUI({
     const cached = getCachedQuestions(subject.name, type, subject.topics || []);
     setCurrentIndex(0);
     setUserAnswer('');
+    setHandwrittenImage(null);
+    setHandwrittenMimeType(null);
     setEvaluation(null);
     setHintLevel(0);
     setSessionFinished(false);
@@ -198,7 +209,7 @@ export default function PracticeSessionUI({
   };
 
   const handleEvaluate = async () => {
-    if (!userAnswer.trim()) return;
+    if (!userAnswer.trim() && !handwrittenImage) return;
     setEvaluating(true);
     try {
       const q = questions[currentIndex];
@@ -216,7 +227,9 @@ export default function PracticeSessionUI({
           userAnswer,
           q.keywords || [],
           qMarks,
-          q.type || activeType
+          q.type || activeType,
+          handwrittenImage || undefined,
+          handwrittenMimeType || undefined
         );
       } catch (err: any) {
         console.warn('evaluatorAgent fallback triggered:', err);
@@ -364,6 +377,8 @@ export default function PracticeSessionUI({
     if (currentIndex < questions.length - 1) {
       setCurrentIndex(currentIndex + 1);
       setUserAnswer('');
+      setHandwrittenImage(null);
+      setHandwrittenMimeType(null);
       setEvaluation(null);
       setHintLevel(0);
     } else {
@@ -687,62 +702,132 @@ export default function PracticeSessionUI({
                 </div>
               )}
 
-              {/* Response Console with Live Word & Structure Guide */}
+              {/* Response Console with Keyboard + Handwritten Photo/Camera Modes */}
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-                    <PenTool className="w-3 h-3 text-blue-600" />
-                    <span>Your Academic Response</span>
-                  </label>
+                  <div className="flex items-center gap-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
+                      <PenTool className="w-3 h-3 text-blue-600" />
+                      <span>Your Academic Response</span>
+                    </label>
+                    {activeType !== 'mcq' && (
+                      <div className="inline-flex items-center p-0.5 rounded-xl bg-slate-100 border border-slate-200">
+                        <button
+                          type="button"
+                          disabled={!!evaluation}
+                          onClick={() => setResponseMode('keyboard')}
+                          className={cn(
+                            'px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer',
+                            responseMode === 'keyboard'
+                              ? 'bg-white text-blue-700 shadow-2xs'
+                              : 'text-slate-500 hover:text-slate-800'
+                          )}
+                        >
+                          <Keyboard className="w-3 h-3" />
+                          <span>Keyboard</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!!evaluation}
+                          onClick={() => setResponseMode('photo')}
+                          className={cn(
+                            'px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer',
+                            responseMode === 'photo'
+                              ? 'bg-white text-blue-700 shadow-2xs'
+                              : 'text-slate-500 hover:text-slate-800'
+                          )}
+                        >
+                          <Camera className="w-3 h-3" />
+                          <span>Handwritten Photo</span>
+                          {handwrittenImage && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                   {/* Live Word Count & Target Badge */}
                   <div className="flex items-center gap-2">
                     <span
                       className={cn(
                         'text-[11px] font-bold px-2.5 py-1 rounded-lg border',
-                        wordCount >= structureGuide.minWords
+                        handwrittenImage
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          : wordCount > 0
-                            ? 'bg-amber-50 text-amber-700 border-amber-200'
-                            : 'bg-slate-50 text-slate-500 border-slate-200'
+                          : wordCount >= structureGuide.minWords
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : wordCount > 0
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-slate-50 text-slate-500 border-slate-200'
                       )}
                     >
-                      {wordCount} words • {structureGuide.targetLabel}
+                      {handwrittenImage
+                        ? 'Handwritten Sheet Attached'
+                        : `${wordCount} words • ${structureGuide.targetLabel}`}
                     </span>
                   </div>
                 </div>
 
-                <textarea
-                  value={userAnswer}
-                  onChange={(e) => setUserAnswer(e.target.value)}
-                  disabled={!!evaluation}
-                  placeholder={
-                    activeType === 'numerical'
-                      ? 'Write Given Data, Governing Formula, Step-by-Step Substitution, and Final Answer with Units...'
-                      : activeType === 'long'
-                        ? 'Structure your 7-mark answer: Definition -> Core Architecture/Points -> Comparison -> Real-World Example...'
-                        : 'Type your concise exam answer here. Include a crisp definition, key points, and 1 brief example...'
-                  }
-                  className="h-64 w-full rounded-2xl border border-slate-200 bg-slate-50 p-5 text-slate-900 outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white disabled:opacity-75 transition-all text-sm leading-relaxed"
-                />
+                {responseMode === 'photo' && activeType !== 'mcq' && (
+                  <HandwrittenInputPanel
+                    imageDataUrl={handwrittenImage}
+                    onImageChange={(url, mime) => {
+                      setHandwrittenImage(url);
+                      setHandwrittenMimeType(mime);
+                    }}
+                    disabled={!!evaluation}
+                  />
+                )}
+
+                {(responseMode === 'keyboard' || activeType === 'mcq') && (
+                  <textarea
+                    value={userAnswer}
+                    onChange={(e) => setUserAnswer(e.target.value)}
+                    disabled={!!evaluation}
+                    placeholder={
+                      activeType === 'numerical'
+                        ? 'Write Given Data, Governing Formula, Step-by-Step Substitution, and Final Answer with Units...'
+                        : activeType === 'long'
+                          ? 'Structure your 7-mark answer: Definition -> Core Architecture/Points -> Comparison -> Real-World Example...'
+                          : 'Type your concise exam answer here. Include a crisp definition, key points, and 1 brief example...'
+                    }
+                    className="h-64 w-full rounded-2xl border border-slate-200 bg-slate-50 p-5 text-slate-900 outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white disabled:opacity-75 transition-all text-sm leading-relaxed"
+                  />
+                )}
+
+                {responseMode === 'photo' && activeType !== 'mcq' && (
+                  <textarea
+                    value={userAnswer}
+                    onChange={(e) => setUserAnswer(e.target.value)}
+                    disabled={!!evaluation}
+                    placeholder="Optional: add any extra typed notes or formula clarifications alongside your handwritten photo..."
+                    className="h-24 w-full rounded-2xl border border-slate-200 bg-slate-50 p-4 text-slate-900 outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white disabled:opacity-75 transition-all text-xs leading-relaxed"
+                  />
+                )}
               </div>
 
               {/* Action Button: Check & Compare Answer */}
               {!evaluation ? (
                 <button
-                  disabled={evaluating || !userAnswer.trim()}
+                  disabled={evaluating || (!userAnswer.trim() && !handwrittenImage)}
                   onClick={handleEvaluate}
                   className="w-full py-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
                 >
                   {evaluating ? (
                     <>
                       <Loader2 className="h-5 w-5 animate-spin" />
-                      <span>Checking Coverage & Preparing Coaching...</span>
+                      <span>
+                        {handwrittenImage
+                          ? 'Reading Handwriting & Checking Coverage...'
+                          : 'Checking Coverage & Preparing Coaching...'}
+                      </span>
                     </>
                   ) : (
                     <>
                       <Send className="w-4 h-4" />
-                      <span>Check &amp; Compare Answer</span>
+                      <span>
+                        {handwrittenImage ? 'Grade Handwritten Photo & Compare' : 'Check & Compare Answer'}
+                      </span>
                     </>
                   )}
                 </button>
@@ -782,29 +867,45 @@ export default function PracticeSessionUI({
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-200">
-                {/* Student's Submitted Answer */}
-                <div className="p-5 sm:p-6 space-y-2.5 bg-white">
+                {/* Student's Submitted Answer (Typed or Handwritten Photo + OCR Transcript) */}
+                <div className="p-5 sm:p-6 space-y-3 bg-white">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                      Your Submitted Answer
+                      {handwrittenImage ? 'Your Handwritten Submission' : 'Your Submitted Answer'}
                     </span>
                     <span className="text-[10px] font-mono font-bold text-slate-500">
-                      {wordCount} words
+                      {handwrittenImage ? 'Photo OCR' : `${wordCount} words`}
                     </span>
                   </div>
+                  {handwrittenImage && (
+                    <img
+                      src={handwrittenImage}
+                      alt="Submitted handwritten sheet"
+                      className="w-full max-h-56 object-contain rounded-xl border border-slate-200 bg-slate-50"
+                    />
+                  )}
                   <div className="text-xs sm:text-sm text-slate-700 leading-relaxed whitespace-pre-wrap bg-slate-50 p-4 rounded-xl border border-slate-100">
-                    {userAnswer}
+                    {evaluation.transcribedAnswer || userAnswer || 'Handwritten answer evaluated.'}
                   </div>
                 </div>
 
-                {/* Ideal University Answer */}
-                <div className="p-5 sm:p-6 space-y-2.5 bg-emerald-50/30">
+                {/* Ideal University Answer (+ Exam-Copy Diagram Sketch for 7-Mark Theory) */}
+                <div className="p-5 sm:p-6 space-y-3 bg-emerald-50/30">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-black uppercase tracking-widest text-emerald-700 flex items-center gap-1.5">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                       Ideal University Answer ({evaluation.questionMarks || currentQ.marks} Marks)
                     </span>
                   </div>
+                  {activeType === 'long' && (
+                    <DiagramBlueprintCard
+                      questionText={currentQ.text}
+                      subjectName={subject?.name || 'Engineering'}
+                      keywords={currentQ.keywords}
+                      blueprint={currentQ.diagramBlueprint}
+                      variant="ideal"
+                    />
+                  )}
                   <div className="text-xs sm:text-sm text-slate-800 leading-relaxed prose prose-slate prose-sm max-w-none bg-white p-4 rounded-xl border border-emerald-200/80 shadow-2xs">
                     <Markdown>{evaluation.idealUniversityAnswer || currentQ.modelAnswer}</Markdown>
                   </div>
@@ -1123,7 +1224,18 @@ export default function PracticeSessionUI({
                   </div>
                 </div>
 
-                {/* University Paper-Checker Playbook (Replaces Examiner & AI Stylometry Engine) */}
+                {/* Must-Draw Diagram Blueprint inside Answer Coach (for 7-Mark Theory Questions) */}
+                {activeType === 'long' && (
+                  <DiagramBlueprintCard
+                    questionText={currentQ.text}
+                    subjectName={subject?.name || 'Engineering'}
+                    keywords={currentQ.keywords}
+                    blueprint={currentQ.diagramBlueprint}
+                    variant="coach"
+                  />
+                )}
+
+                {/* University Paper-Checker Playbook */}
                 <div className="bg-gradient-to-br from-slate-900 to-indigo-950 rounded-2xl p-5 text-white border border-slate-800 space-y-2.5">
                   <span className="text-[10px] font-black uppercase tracking-widest text-blue-300 flex items-center gap-1.5">
                     <Target className="w-3.5 h-3.5 text-blue-400" />
