@@ -27,6 +27,81 @@ import {
 import { generateMockPaperAgent, evaluateMockPaperAgent, proctorPresenceAgent } from '../services/geminiService';
 import HandwrittenInputPanel from './HandwrittenInputPanel';
 import { cn } from '../lib/utils';
+import * as tf from '@tensorflow/tfjs';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
+
+const FORBIDDEN_OBJECT_THRESHOLDS: Record<string, number> = {
+  'cell phone': 0.30,
+  book: 0.36,
+  remote: 0.40,
+  laptop: 0.58,
+  tv: 0.65,
+  keyboard: 0.55,
+  mouse: 0.50,
+  bottle: 0.46,
+  cup: 0.46,
+  'wine glass': 0.48,
+  bowl: 0.50,
+  scissors: 0.45,
+  backpack: 0.52,
+  handbag: 0.52,
+  suitcase: 0.55,
+  umbrella: 0.52,
+  clock: 0.65
+};
+
+let sharedCocoModelPromise: Promise<cocoSsd.ObjectDetection> | null = null;
+
+function getSharedCocoModel(): Promise<cocoSsd.ObjectDetection> {
+  if (!sharedCocoModelPromise) {
+    sharedCocoModelPromise = (async () => {
+      await tf.ready();
+      return await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    })().catch((err) => {
+      sharedCocoModelPromise = null;
+      throw err;
+    });
+  }
+  return sharedCocoModelPromise;
+}
+
+function deduplicatePersonDetections(predictions: cocoSsd.DetectedObject[]): cocoSsd.DetectedObject[] {
+  const persons = predictions
+    .filter((p) => p.class === 'person' && p.score >= 0.40)
+    .sort((a, b) => b.score - a.score);
+
+  const distinct: cocoSsd.DetectedObject[] = [];
+  for (const cand of persons) {
+    const [cx, cy, cw, ch] = cand.bbox;
+    const cArea = Math.max(1, cw * ch);
+    let isDuplicate = false;
+
+    for (const existing of distinct) {
+      const [ex, ey, ew, eh] = existing.bbox;
+      const eArea = Math.max(1, ew * eh);
+      const ix1 = Math.max(cx, ex);
+      const iy1 = Math.max(cy, ey);
+      const ix2 = Math.min(cx + cw, ex + ew);
+      const iy2 = Math.min(cy + ch, ey + eh);
+      const iw = Math.max(0, ix2 - ix1);
+      const ih = Math.max(0, iy2 - iy1);
+      const interArea = iw * ih;
+      const unionArea = cArea + eArea - interArea;
+      const iou = unionArea > 0 ? interArea / unionArea : 0;
+      const containment = interArea / Math.min(cArea, eArea);
+
+      if (iou > 0.42 || containment > 0.72) {
+        isDuplicate = true;
+        break;
+      }
+    }
+
+    if (!isDuplicate) {
+      distinct.push(cand);
+    }
+  }
+  return distinct;
+}
 
 interface MockPart {
   partId: string;
@@ -193,14 +268,17 @@ export default function MockExamSimulator({
   const proctorStreamRef = useRef<MediaStream | null>(null);
   const proctorVideoRef = useRef<HTMLVideoElement | null>(null);
   const setupVideoRef = useRef<HTMLVideoElement | null>(null);
+  const modalVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const micIntervalRef = useRef<number | null>(null);
   const suppressBlurRef = useRef<boolean>(false);
   const disqualifiedLockRef = useRef<boolean>(false);
+  const autoSubmittedLockRef = useRef<boolean>(false);
   const wasNativeFullscreenRef = useRef<boolean>(false);
   const absenceCountRef = useRef<number>(0);
   const presenceCheckBusyRef = useRef<boolean>(false);
   const lastViolationAtRef = useRef<number>(0);
+  const lastViolationTypeRef = useRef<string | null>(null);
   const inViolationStateRef = useRef<boolean>(false);
   const violationHistoryRef = useRef<
     { strike: number; type: string; label: string; reason: string; time: string }[]
@@ -219,6 +297,8 @@ export default function MockExamSimulator({
   const [absenceWarnings, setAbsenceWarnings] = useState(0);
   const [personPresentStatus, setPersonPresentStatus] = useState<'checking' | 'present' | 'violation'>('checking');
   const [activeCamViolationLabel, setActiveCamViolationLabel] = useState<string | null>(null);
+  const [activeCamViolationReason, setActiveCamViolationReason] = useState<string | null>(null);
+  const [localVisionStatus, setLocalVisionStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
   const [setupCameraAlert, setSetupCameraAlert] = useState<{
     status: 'checking' | 'ok' | 'shutter_blocked' | 'other_person_detected' | 'object_detected' | 'person_absent';
     label: string;
@@ -231,6 +311,33 @@ export default function MockExamSimulator({
     reason: string;
     personReturned: boolean;
   } | null>(null);
+
+  const playProctorAlertTone = (isFinalSubmit = false) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      const beeps = isFinalSubmit ? [0, 0.16, 0.32] : [0, 0.14];
+      beeps.forEach((offset) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(isFinalSubmit ? 520 : 880, now + offset);
+        gain.gain.setValueAtTime(0.08, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.11);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.12);
+      });
+      window.setTimeout(() => {
+        ctx.close().catch(() => {});
+      }, 650);
+    } catch {
+      // Ignore audio autoplay restriction
+    }
+  };
 
   latestPaperRef.current = paper;
   latestAnswersRef.current = answers;
@@ -306,6 +413,7 @@ export default function MockExamSimulator({
     setMicLevel(0);
     setSetupCameraAlert(null);
     setActiveCamViolationLabel(null);
+    setActiveCamViolationReason(null);
   };
 
   useEffect(() => {
@@ -327,7 +435,11 @@ export default function MockExamSimulator({
       proctorVideoRef.current.srcObject = stream;
       proctorVideoRef.current.play().catch(() => {});
     }
-  }, [phase, proctorStatus, camActive]);
+    if (absenceModal && modalVideoRef.current) {
+      modalVideoRef.current.srcObject = stream;
+      modalVideoRef.current.play().catch(() => {});
+    }
+  }, [phase, proctorStatus, camActive, absenceModal]);
 
   const startMicAnalyzer = (stream: MediaStream) => {
     try {
@@ -550,8 +662,8 @@ export default function MockExamSimulator({
     };
   }, [phase, paper]);
 
-  // Monitor camera in BOTH Setup preview box (live pre-check warnings) AND Active Fullscreen Exam (3 warnings -> 4th auto-submit):
-  // Detects: Privacy Shutter Closed, Other Person Detected (2+ people), Object Detected (any object apart from face), & Not Present on Camera.
+  // Heavy Real-Time Camera Proctoring in BOTH Setup preview box AND Active Fullscreen Exam (3 immediate warnings -> 4th auto-submit):
+  // Hybrid Engine: Instant Shutter Check + In-Browser TensorFlow COCO-SSD (Phones, Books, Objects, 2+ People, Absence) + FaceDetector + Gemini Vision.
   useEffect(() => {
     const isSetupLive = phase === 'setup' && camActive;
     const isWritingLive = phase === 'writing';
@@ -560,11 +672,37 @@ export default function MockExamSimulator({
     let cancelled = false;
     presenceCheckBusyRef.current = false;
 
+    let cocoModel: cocoSsd.ObjectDetection | null = null;
+    setLocalVisionStatus((prev) => (prev === 'ready' ? 'ready' : 'loading'));
+    getSharedCocoModel()
+      .then((model) => {
+        if (cancelled) return;
+        cocoModel = model;
+        setLocalVisionStatus('ready');
+      })
+      .catch(() => {
+        if (!cancelled) setLocalVisionStatus('unavailable');
+      });
+
     const canvas = document.createElement('canvas');
-    canvas.width = 320;
-    canvas.height = 180;
-    const ctx = canvas.getContext('2d');
+    canvas.width = 480;
+    canvas.height = 270;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     let lastAiCheckAt = 0;
+    let prevMotionGrid: number[] | null = null;
+    let consecutiveNoPersonTicks = 0;
+    let activeViolationSource: 'local' | 'gemini' | null = null;
+
+    // Optional native Chromium FaceDetector as fast secondary multi-face guard
+    let faceDetector: any = null;
+    try {
+      const FaceDetectorCtor = (window as any).FaceDetector;
+      if (FaceDetectorCtor) {
+        faceDetector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 5 });
+      }
+    } catch {
+      faceDetector = null;
+    }
 
     type ViolationKind = 'shutter_blocked' | 'other_person_detected' | 'object_detected' | 'person_absent';
 
@@ -582,8 +720,13 @@ export default function MockExamSimulator({
       person_absent: 'Not Visible on Camera!'
     };
 
-    const handleViolationDetected = (vType: ViolationKind, reasonText: string) => {
-      if (cancelled) return;
+    const handleViolationDetected = (
+      vType: ViolationKind,
+      reasonText: string,
+      source: 'local' | 'gemini' = 'local'
+    ) => {
+      if (cancelled || autoSubmittedLockRef.current) return;
+      activeViolationSource = source;
 
       if (isSetupLive) {
         setSetupCameraAlert({
@@ -596,17 +739,21 @@ export default function MockExamSimulator({
 
       const now = Date.now();
       const wasInViolation = inViolationStateRef.current;
-      const cooldownMs = wasInViolation ? 3200 : 1200;
+      const violationTypeChanged = lastViolationTypeRef.current !== vType;
+      // Immediate 0ms warning whenever a new violation starts or switches type;
+      // 3000ms escalation step if the candidate leaves the violation unresolved continuously.
+      const cooldownMs = !wasInViolation || violationTypeChanged ? 0 : 3000;
 
       setPersonPresentStatus('violation');
       setActiveCamViolationLabel(labelMap[vType]);
+      setActiveCamViolationReason(reasonText);
 
-      // Respect short cooldown so dual local+AI loops don't double-strike within 1 second
-      if (now - lastViolationAtRef.current < cooldownMs) {
+      if (cooldownMs > 0 && now - lastViolationAtRef.current < cooldownMs) {
         return;
       }
 
       lastViolationAtRef.current = now;
+      lastViolationTypeRef.current = vType;
       inViolationStateRef.current = true;
       absenceCountRef.current += 1;
       const nextWarn = absenceCountRef.current;
@@ -622,6 +769,7 @@ export default function MockExamSimulator({
       violationHistoryRef.current = [...violationHistoryRef.current, entry];
 
       if (nextWarn <= 3) {
+        playProctorAlertTone(false);
         setAbsenceModal({
           count: nextWarn,
           violationType: vType,
@@ -630,6 +778,8 @@ export default function MockExamSimulator({
           personReturned: false
         });
       } else {
+        autoSubmittedLockRef.current = true;
+        playProctorAlertTone(true);
         setAbsenceModal(null);
         submitHandlerRef.current(
           `Auto-submitted on 4th camera violation (${labelMap[vType]}): ${reasonText}`
@@ -637,8 +787,30 @@ export default function MockExamSimulator({
       }
     };
 
+    const markCameraVerifiedClear = (source: 'local' | 'gemini') => {
+      if (cancelled) return;
+      if (source === 'local' && activeViolationSource === 'gemini') {
+        return;
+      }
+      activeViolationSource = null;
+      if (isSetupLive) {
+        setSetupCameraAlert({
+          status: 'ok',
+          label: 'Single Person Verified',
+          reason: 'Only your face is visible — no extra person or object detected.'
+        });
+      } else {
+        inViolationStateRef.current = false;
+        lastViolationTypeRef.current = null;
+        setPersonPresentStatus('present');
+        setActiveCamViolationLabel(null);
+        setActiveCamViolationReason(null);
+        setAbsenceModal((prev) => (prev ? { ...prev, personReturned: true } : null));
+      }
+    };
+
     const runProctorMonitorTick = async () => {
-      if (cancelled || disqualifiedLockRef.current || presenceCheckBusyRef.current) return;
+      if (cancelled || disqualifiedLockRef.current || autoSubmittedLockRef.current || presenceCheckBusyRef.current) return;
       const video = isSetupLive ? setupVideoRef.current : proctorVideoRef.current;
       if (!video || video.readyState < 2 || video.videoWidth === 0 || !ctx) return;
 
@@ -653,13 +825,17 @@ export default function MockExamSimulator({
         let edgeCount = 0;
         let prevLuma = 0;
         let count = 0;
-        const step = 16;
+        const step = 24;
+        const motionGrid: number[] = [];
         for (let i = 0; i < pixels.length; i += step) {
           const luma = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
           sumLuma += luma;
           sumSq += luma * luma;
           if (count > 0 && Math.abs(luma - prevLuma) > 10) {
             edgeCount += 1;
+          }
+          if (count % 16 === 0) {
+            motionGrid.push(luma);
           }
           prevLuma = luma;
           count += 1;
@@ -669,67 +845,156 @@ export default function MockExamSimulator({
         const stdDev = Math.sqrt(variance);
         const edgeRatio = count > 1 ? edgeCount / (count - 1) : 0;
 
+        let suddenSceneShift = false;
+        if (prevMotionGrid && prevMotionGrid.length === motionGrid.length && motionGrid.length > 0) {
+          let shiftedSamples = 0;
+          for (let g = 0; g < motionGrid.length; g++) {
+            if (Math.abs(motionGrid[g] - prevMotionGrid[g]) > 24) {
+              shiftedSamples += 1;
+            }
+          }
+          if (shiftedSamples / motionGrid.length > 0.13) {
+            suddenSceneShift = true;
+          }
+        }
+        prevMotionGrid = motionGrid;
+
         const isShutterClosedLocally = avgLuma < 16 || (stdDev < 10 && edgeRatio < 0.025);
         if (isShutterClosedLocally) {
           handleViolationDetected(
             'shutter_blocked',
-            'Your camera privacy shutter is closed or an object is covering the lens. Open your camera shutter or remove the object immediately.'
+            'Your camera privacy shutter is closed or an object is covering the lens. Open your camera shutter or remove the object immediately.',
+            'local'
           );
           return;
         }
 
-        // 2. Run Gemini Vision check every ~2.0s to detect:
-        //    - Other person (2+ people in frame -> "Other Person Detected")
-        //    - Any object brought apart from face ("Object Detected")
-        //    - Candidate not present on camera ("Not on Camera")
+        // 2. Real-time In-Browser AI Object & Multi-Person Detection (TensorFlow.js COCO-SSD)
+        let localEngineVerified = false;
+        if (cocoModel) {
+          const predictions = await cocoModel.detect(canvas, 10, 0.28);
+          if (cancelled || disqualifiedLockRef.current || autoSubmittedLockRef.current) return;
+
+          const distinctPersons = deduplicatePersonDetections(predictions);
+          if (distinctPersons.length >= 2) {
+            consecutiveNoPersonTicks = 0;
+            handleViolationDetected(
+              'other_person_detected',
+              `Other Person Detected (${distinctPersons.length} people detected on camera). Only the exam candidate may be on camera.`,
+              'local'
+            );
+            return;
+          }
+
+          const forbiddenItems = predictions
+            .filter((p) => {
+              const threshold = FORBIDDEN_OBJECT_THRESHOLDS[p.class];
+              return typeof threshold === 'number' && p.score >= threshold;
+            })
+            .sort((a, b) => b.score - a.score);
+
+          if (forbiddenItems.length > 0) {
+            const topObj = forbiddenItems[0];
+            const itemDisplay = topObj.class === 'cell phone' ? 'mobile phone' : topObj.class;
+            handleViolationDetected(
+              'object_detected',
+              `Object Detected (${itemDisplay}): Remove ${itemDisplay} from camera view immediately.`,
+              'local'
+            );
+            return;
+          }
+
+          if (distinctPersons.length === 0) {
+            consecutiveNoPersonTicks += 1;
+            if (consecutiveNoPersonTicks >= 2) {
+              handleViolationDetected(
+                'person_absent',
+                'You are not visible on camera. Keep your face centered on camera.',
+                'local'
+              );
+              return;
+            }
+          } else {
+            consecutiveNoPersonTicks = 0;
+            localEngineVerified = true;
+          }
+        }
+
+        // 3. Zero-latency local FaceDetector backup (catches 2+ faces immediately even while COCO loads)
+        if (faceDetector) {
+          try {
+            const faces = await faceDetector.detect(canvas);
+            if (cancelled || disqualifiedLockRef.current || autoSubmittedLockRef.current) return;
+            if (Array.isArray(faces)) {
+              if (faces.length >= 2) {
+                consecutiveNoPersonTicks = 0;
+                handleViolationDetected(
+                  'other_person_detected',
+                  `Other Person Detected (${faces.length} faces visible on camera). Only the candidate may appear on camera.`,
+                  'local'
+                );
+                return;
+              }
+              if (faces.length === 0 && !localEngineVerified) {
+                consecutiveNoPersonTicks += 1;
+                if (consecutiveNoPersonTicks >= 2) {
+                  suddenSceneShift = true;
+                }
+              }
+            }
+          } catch {
+            // Fall through cleanly
+          }
+        }
+
+        // Mark clean immediately when local COCO-SSD confirms 1 person & 0 forbidden objects
+        if (localEngineVerified) {
+          markCameraVerifiedClear('local');
+        }
+
+        // 4. Secondary Gemini Vision AI Inspection (catches handwritten sheets, earbuds, etc. when server key is active)
         const now = Date.now();
-        if (now - lastAiCheckAt < 1900) {
+        const aiCadenceMs = localEngineVerified ? 1800 : 950;
+        if (!suddenSceneShift && now - lastAiCheckAt < aiCadenceMs) {
           return;
         }
         lastAiCheckAt = now;
 
-        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.65);
+        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.72);
         const res = await proctorPresenceAgent(frameDataUrl, 'image/jpeg');
 
-        if (cancelled || disqualifiedLockRef.current) return;
+        if (cancelled || disqualifiedLockRef.current || autoSubmittedLockRef.current) return;
         if (res.fallback) return;
 
         if (res.shutterClosedOrBlocked || res.violationType === 'shutter_blocked') {
           handleViolationDetected(
             'shutter_blocked',
             res.reason ||
-              'Camera privacy shutter closed or lens blocked. Remove any object or open your camera immediately.'
+              'Camera privacy shutter closed or lens blocked. Remove any object or open your camera immediately.',
+            'gemini'
           );
         } else if (res.otherPersonDetected || res.violationType === 'other_person_detected') {
           handleViolationDetected(
             'other_person_detected',
-            res.reason || 'Other person detected on camera (two or more people visible). Only you may be on camera.'
+            res.reason || 'Other person detected on camera (two or more people visible). Only you may be on camera.',
+            'gemini'
           );
         } else if (res.objectDetected || res.violationType === 'object_detected') {
           const itemLabel = res.detectedItem && res.detectedItem !== 'none' ? ` (${res.detectedItem})` : '';
           handleViolationDetected(
             'object_detected',
             res.reason ||
-              `Object detected${itemLabel} apart from your face. Remove all objects from camera view immediately.`
+              `Object detected${itemLabel} apart from your face. Remove all objects from camera view immediately.`,
+            'gemini'
           );
         } else if (!res.personPresent || res.violationType === 'person_absent') {
           handleViolationDetected(
             'person_absent',
-            res.reason || 'You are not visible on camera. Keep your face centered on camera.'
+            res.reason || 'You are not visible on camera. Keep your face centered on camera.',
+            'gemini'
           );
         } else {
-          if (isSetupLive) {
-            setSetupCameraAlert({
-              status: 'ok',
-              label: 'Single Person Verified',
-              reason: 'Only your face is visible — no extra person or object detected.'
-            });
-          } else {
-            inViolationStateRef.current = false;
-            setPersonPresentStatus('present');
-            setActiveCamViolationLabel(null);
-            setAbsenceModal((prev) => (prev ? { ...prev, personReturned: true } : null));
-          }
+          markCameraVerifiedClear('gemini');
         }
       } catch {
         // Keep exam running cleanly on transient frame read error
@@ -738,8 +1003,8 @@ export default function MockExamSimulator({
       }
     };
 
-    const initialTimer = window.setTimeout(runProctorMonitorTick, 700);
-    const intervalId = window.setInterval(runProctorMonitorTick, 1000);
+    const initialTimer = window.setTimeout(runProctorMonitorTick, 350);
+    const intervalId = window.setInterval(runProctorMonitorTick, 400);
 
     return () => {
       cancelled = true;
@@ -798,13 +1063,17 @@ export default function MockExamSimulator({
       const shuffledPaper = buildShuffledMixedPaper(generated);
 
       disqualifiedLockRef.current = false;
+      autoSubmittedLockRef.current = false;
       absenceCountRef.current = 0;
       presenceCheckBusyRef.current = false;
       lastViolationAtRef.current = 0;
+      lastViolationTypeRef.current = null;
       inViolationStateRef.current = false;
       violationHistoryRef.current = [];
       setAbsenceWarnings(0);
       setAbsenceModal(null);
+      setActiveCamViolationLabel(null);
+      setActiveCamViolationReason(null);
       setPersonPresentStatus('checking');
       setPaper(shuffledPaper);
       setUnitChoiceMap({ 1: 'A', 2: 'A', 3: 'A', 4: 'A', 5: 'A' });
@@ -931,20 +1200,79 @@ export default function MockExamSimulator({
       setPhase('results');
     } catch (err) {
       console.error('Mock paper evaluation error:', err);
+      const localStopWords = new Set([
+        'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'their', 'they',
+        'have', 'has', 'had', 'were', 'was', 'are', 'will', 'about', 'which', 'where',
+        'when', 'what', 'how', 'explain', 'describe', 'define', 'discuss', 'write',
+        'marks', 'question', 'answer', 'example', 'diagram', 'please', 'test', 'hello'
+      ]);
+      const extractTerms = (str: string) =>
+        str
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter((w) => w.length >= 3 && !localStopWords.has(w));
+
       const evaluatedParts = submissions.map((s) => {
-        const hasAttempt = Boolean(s.userAnswer?.trim() || s.handwrittenImageBase64);
+        const typed = String(s.userAnswer || '').trim();
+        const hasImg = Boolean(s.handwrittenImageBase64);
+        const qMax = Number(s.marks) || 7;
+
+        if (!typed && !hasImg) {
+          return {
+            ...s,
+            obtainedMarks: 0,
+            maxMarks: qMax,
+            coveredPoints: [],
+            missingPoints: [{ point: 'Unattempted question', potentialMarks: `+${qMax} Marks` }],
+            feedback: `Not attempted (0/${qMax} marks).`
+          };
+        }
+
+        if (hasImg && !typed) {
+          return {
+            ...s,
+            obtainedMarks: 0,
+            maxMarks: qMax,
+            coveredPoints: [],
+            missingPoints: [{ point: 'Uploaded image could not be verified as relevant to this question.', potentialMarks: `+${qMax} Marks` }],
+            feedback: `Strictly 0/${qMax} marks: Uploaded image could not be verified as relevant to this question.`
+          };
+        }
+
+        const lower = typed.toLowerCase();
+        const words = lower.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+        const uniqueRatio = words.length >= 6 ? new Set(words).size / words.length : 1;
+        const isSpam = /(.)\1{4,}/.test(lower) || uniqueRatio < 0.35 || typed.length < 12;
+        const kwList: string[] = Array.isArray(s.keywords) ? s.keywords : [];
+        const matchedKw = kwList.filter((k) => lower.includes(k.toLowerCase()));
+        const refTerms = extractTerms(`${s.modelAnswer || ''} ${kwList.join(' ')}`);
+        const ansTerms = extractTerms(typed);
+        const matchedRef = refTerms.filter((rt) => ansTerms.some((aw) => aw === rt || (aw.length >= 5 && rt.startsWith(aw.slice(0, 5)))));
+
+        if (isSpam || (matchedKw.length === 0 && matchedRef.length === 0)) {
+          return {
+            ...s,
+            obtainedMarks: 0,
+            maxMarks: qMax,
+            coveredPoints: [],
+            missingPoints: [{ point: 'Submitted answer is unrelated, senseless, or lacks relevant concepts.', potentialMarks: `+${qMax} Marks` }],
+            feedback: `Strictly 0/${qMax} marks: Unrelated or senseless answer detected.`
+          };
+        }
+
+        const ratio = kwList.length > 0 ? matchedKw.length / kwList.length : Math.min(1, matchedRef.length / 5);
+        const obtained = Math.min(qMax, Math.round(ratio * qMax * 2) / 2);
         return {
           ...s,
-          obtainedMarks: hasAttempt ? 4 : 0,
-          maxMarks: s.marks,
-          coveredPoints: hasAttempt ? ['Attempted core concepts'] : [],
-          missingPoints: hasAttempt
-            ? [{ point: 'Add diagram and real-world example for full marks', potentialMarks: '+2 Marks' }]
-            : [{ point: 'Unattempted question', potentialMarks: '+7 Marks' }],
-          feedback: hasAttempt ? 'Awarded 4/7 marks.' : 'Not attempted (0/7 marks).'
+          obtainedMarks: obtained,
+          maxMarks: qMax,
+          coveredPoints: matchedKw.length > 0 ? matchedKw.map((k) => `Covered: ${k}`) : ['Relevant concepts covered'],
+          missingPoints: [{ point: 'Add diagram and real-world example for full marks', potentialMarks: '+2 Marks' }],
+          feedback: `Awarded ${obtained}/${qMax} marks.`
         };
       });
-      const totalObtained = evaluatedParts.reduce((sum, p) => sum + p.obtainedMarks, 0);
+      const totalObtained = Number(evaluatedParts.reduce((sum, p) => sum + p.obtainedMarks, 0).toFixed(1));
       const pct = Math.round((totalObtained / 70) * 100);
       setEvalResult({
         disqualified: false,
@@ -959,7 +1287,7 @@ export default function MockExamSimulator({
         totalObtained,
         totalMax: 70,
         percentage: pct,
-        grade: pct >= 75 ? 'A' : pct >= 50 ? 'B' : 'C',
+        grade: pct >= 75 ? 'A' : pct >= 50 ? 'B' : pct >= 35 ? 'C' : 'Needs Revision',
         evaluatedParts
       });
       setPhase('results');
@@ -1218,10 +1546,10 @@ export default function MockExamSimulator({
               </p>
             </div>
             <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80">
-              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Camera AI Proctoring</p>
-              <p className="text-base font-black text-blue-700">3 Warnings → Auto-Submit</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Heavy Camera Proctoring</p>
+              <p className="text-base font-black text-blue-700">Instant Warn → 4th Auto-Submit</p>
               <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                Privacy shutter closed, phones/books/2nd person, or leaving camera: 3 alerts then auto-submit on 4th
+                Any object (phone/book/notes), other person, closed shutter, or absence: immediate alert (3 warnings, auto-submit on 4th)
               </p>
             </div>
             <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200">
@@ -1279,6 +1607,16 @@ export default function MockExamSimulator({
                       ? 'Camera & Microphone Verified — Ready to Enter Exam'
                       : 'Verify Camera & Microphone Before Starting'}
                   </span>
+                  {camActive && localVisionStatus === 'ready' && (
+                    <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-black uppercase">
+                      AI Object &amp; Person Guard Active
+                    </span>
+                  )}
+                  {camActive && localVisionStatus === 'loading' && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-bold">
+                      Loading AI Object Detector...
+                    </span>
+                  )}
                 </div>
 
                 {/* Live Pre-Check AI Detection Status (Object / Other Person / Not on Camera / Shutter) */}
@@ -1705,31 +2043,48 @@ export default function MockExamSimulator({
   const isLowTime = secondsLeft < 15 * 60;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-100 overflow-y-auto px-4 sm:px-8 py-4 sm:py-6">
+    <div
+      className={cn(
+        'fixed inset-0 z-50 bg-slate-100 overflow-y-auto px-4 sm:px-8 py-4 sm:py-6 transition-all',
+        personPresentStatus === 'violation' && 'ring-8 ring-inset ring-rose-600'
+      )}
+    >
       {/* Camera Proctoring Violation Warning Popup Modal (Warnings 1, 2, 3 across Shutter/Other Person/Object/Absence) */}
       {absenceModal && (
-        <div className="fixed inset-0 z-[70] bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl border-2 border-rose-500 shadow-2xl max-w-md w-full p-6 sm:p-7 space-y-5 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-rose-100 border border-rose-300 flex items-center justify-center mx-auto">
-              {absenceModal.violationType === 'shutter_blocked' ? (
-                <ShieldAlert className="w-8 h-8 text-rose-600" />
-              ) : absenceModal.violationType === 'object_detected' ? (
-                <AlertTriangle className="w-8 h-8 text-rose-600" />
-              ) : (
-                <UserX className="w-8 h-8 text-rose-600" />
-              )}
+        <div className="fixed inset-0 z-[70] bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border-4 border-rose-600 shadow-2xl max-w-md w-full p-6 sm:p-7 space-y-4 text-center">
+            <div className="flex items-center justify-between gap-3 bg-rose-50 border border-rose-200 rounded-2xl p-3">
+              <div className="w-24 h-16 rounded-xl bg-black border-2 border-rose-500 overflow-hidden shrink-0">
+                <video ref={modalVideoRef} muted playsInline autoPlay className="w-full h-full object-cover" />
+              </div>
+              <div className="text-left flex-1">
+                <span className="inline-block px-2.5 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-black uppercase tracking-widest">
+                  Warning {absenceModal.count} of 3
+                </span>
+                <p className="text-xs font-black text-rose-800 mt-1">
+                  {absenceModal.count === 3
+                    ? 'FINAL WARNING — Next (4th) violation auto-submits exam!'
+                    : `${4 - absenceModal.count} attempts left before auto-submit`}
+                </p>
+              </div>
             </div>
 
             <div className="space-y-2">
-              <span className="inline-block px-3 py-1 rounded-full bg-rose-600 text-white text-[11px] font-black uppercase tracking-widest">
-                Proctoring Warning {absenceModal.count} of 3
-              </span>
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 border border-rose-300 flex items-center justify-center mx-auto">
+                {absenceModal.violationType === 'shutter_blocked' ? (
+                  <ShieldAlert className="w-7 h-7 text-rose-600" />
+                ) : absenceModal.violationType === 'object_detected' ? (
+                  <AlertTriangle className="w-7 h-7 text-rose-600" />
+                ) : (
+                  <UserX className="w-7 h-7 text-rose-600" />
+                )}
+              </div>
               <h3 className="text-xl font-black text-rose-700">
                 {absenceModal.count === 3
                   ? `FINAL WARNING (3/3): ${absenceModal.title}`
                   : absenceModal.title}
               </h3>
-              <p className="text-xs sm:text-sm text-slate-600 font-medium leading-relaxed">
+              <p className="text-xs sm:text-sm text-slate-700 font-semibold leading-relaxed">
                 {absenceModal.reason}{' '}
                 {absenceModal.count === 3
                   ? 'On the 4th violation attempt, your exam will be AUTO-SUBMITTED immediately.'
@@ -1737,7 +2092,7 @@ export default function MockExamSimulator({
               </p>
             </div>
 
-            {/* Strike Indicator 1 -> 2 -> 3 -> Auto-Submit */}
+            {/* Strike Indicator 1 -> 2 -> 3 -> 4th Auto-Submit */}
             <div className="grid grid-cols-4 gap-2 pt-1">
               {[1, 2, 3, 4].map((step) => (
                 <div
@@ -1747,11 +2102,11 @@ export default function MockExamSimulator({
                     step <= absenceModal.count
                       ? 'bg-rose-600 text-white border-rose-600'
                       : step === 4
-                        ? 'bg-slate-100 text-rose-700 border-rose-200'
+                        ? 'bg-slate-100 text-rose-700 border-rose-300'
                         : 'bg-slate-50 text-slate-400 border-slate-200'
                   )}
                 >
-                  {step === 4 ? '4: Submit' : `Warn ${step}`}
+                  {step === 4 ? '4th: Submit' : `Warn ${step}`}
                 </div>
               ))}
             </div>
@@ -1885,13 +2240,36 @@ export default function MockExamSimulator({
           </div>
         </div>
 
-        {/* Single Top Proctoring Rules Reminder */}
-        <div className="flex items-center gap-2 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
-          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
-          <span>
-            Proctoring active (Fullscreen + Camera AI + Mic): keep camera shutter open &amp; unobstructed, stay alone on camera (no phone, book, notes, or 2nd person), and remain visible — 3 alerts then auto-submit on 4th violation. Tab-switch / Esc triggers instant disqualification.
-          </span>
-        </div>
+        {/* Active Violation Banner or Proctoring Rules Reminder */}
+        {personPresentStatus === 'violation' ? (
+          <div className="flex items-center justify-between gap-3 text-xs font-black text-white bg-rose-600 border-2 border-rose-400 rounded-2xl px-4 py-3 shadow-lg animate-pulse">
+            <div className="flex items-center gap-2.5">
+              <ShieldAlert className="w-5 h-5 shrink-0 text-white" />
+              <span>
+                IMMEDIATE PROCTORING WARNING ({absenceWarnings}/3):{' '}
+                {activeCamViolationLabel?.toUpperCase() || 'CAMERA VIOLATION'} —{' '}
+                {activeCamViolationReason || 'Remove unauthorized object / other person immediately. 4th attempt auto-submits exam!'}
+              </span>
+            </div>
+            <span className="px-2.5 py-1 rounded-lg bg-rose-950/60 font-mono text-[11px] shrink-0">
+              {absenceWarnings}/3 Strikes
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-3 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+              <span>
+                Heavy Camera AI Proctoring active (Fullscreen + Cam + Mic): any object (phone/book/notes), other person, closed shutter, or leaving camera triggers immediate warnings (3 warnings → 4th attempt auto-submits exam). Tab-switch / Esc triggers instant disqualification.
+              </span>
+            </div>
+            {absenceWarnings > 0 && (
+              <span className="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 font-black text-[11px] shrink-0 border border-rose-300">
+                Warnings: {absenceWarnings}/3
+              </span>
+            )}
+          </div>
+        )}
 
         {/* All 5 Shuffled Questions Displayed Together in One Scroll */}
         <div className="space-y-6">

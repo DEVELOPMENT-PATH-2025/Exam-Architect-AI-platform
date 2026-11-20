@@ -48,6 +48,216 @@ function cleanJsonText(rawText: string = ""): string {
   return cleaned.trim();
 }
 
+const EXAM_STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "into", "their", "they", "them",
+  "have", "has", "had", "been", "were", "was", "are", "will", "would", "could", "should",
+  "about", "which", "where", "when", "what", "how", "why", "who", "whom", "whose",
+  "also", "only", "very", "more", "most", "such", "some", "many", "each", "every",
+  "other", "than", "then", "there", "here", "these", "those", "your", "our", "you",
+  "explain", "describe", "define", "discuss", "write", "note", "short", "long",
+  "marks", "mark", "question", "answer", "example", "examples", "diagram", "labeled",
+  "support", "working", "principles", "principle", "framework", "complete", "core",
+  "operational", "workflow", "architectural", "detailed", "step", "steps", "using",
+  "please", "give", "make", "just", "know", "dont", "don", "nothing", "something",
+  "anything", "everything", "hello", "test", "testing", "good", "nice", "fine", "okay",
+  "university", "semester", "exam", "paper", "unit", "units", "subject", "topics", "topic"
+]);
+
+const FILLER_PHRASES = [
+  "i don't know", "i dont know", "dont know", "do not know", "no idea",
+  "give me marks", "please pass", "please give marks", "lorem ipsum",
+  "blah blah", "asdf", "qwerty", "test test", "nothing to write",
+  "i forgot", "sorry sir", "sorry mam", "not attempted", "skip this"
+];
+
+function extractMeaningfulTokens(text: string): string[] {
+  return (text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 3 && !EXAM_STOPWORDS.has(w));
+}
+
+function tokenMatches(ansWord: string, refWord: string): boolean {
+  if (ansWord === refWord) return true;
+  if (ansWord.length >= 5 && refWord.length >= 5) {
+    const stemLen = Math.min(ansWord.length, refWord.length, 5);
+    return ansWord.slice(0, stemLen) === refWord.slice(0, stemLen);
+  }
+  return false;
+}
+
+function assessStrictAnswerRelevance(params: {
+  question: string;
+  modelAnswer: string;
+  keywords: string[];
+  typedText: string;
+  questionType?: string;
+}): {
+  hardZero: boolean;
+  reason: string;
+  matchedKeywords: string[];
+  missingKeywords: string[];
+  matchedDomainCount: number;
+  relevanceRatio: number;
+} {
+  const raw = String(params.typedText || "").trim();
+  const lower = raw.toLowerCase();
+  const kwList: string[] = Array.isArray(params.keywords) ? params.keywords.filter(Boolean) : [];
+
+  if (!raw) {
+    return {
+      hardZero: true,
+      reason: "Empty answer submitted.",
+      matchedKeywords: [],
+      missingKeywords: kwList,
+      matchedDomainCount: 0,
+      relevanceRatio: 0
+    };
+  }
+
+  // 1. Detect obvious repeated-character spam (e.g. "aaaaaa", "1111111")
+  if (/(.)\1{4,}/.test(lower)) {
+    return {
+      hardZero: true,
+      reason: "Repeated character spam / senseless input detected. Strictly 0 marks allocated.",
+      matchedKeywords: [],
+      missingKeywords: kwList,
+      matchedDomainCount: 0,
+      relevanceRatio: 0
+    };
+  }
+
+  // 2. Detect explicit non-answer / filler phrases when no real content exists
+  const words = lower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+  if (FILLER_PHRASES.some((p) => lower.includes(p)) && words.length < 20) {
+    return {
+      hardZero: true,
+      reason: "Filler or non-answer placeholder text detected. Strictly 0 marks allocated.",
+      matchedKeywords: [],
+      missingKeywords: kwList,
+      matchedDomainCount: 0,
+      relevanceRatio: 0
+    };
+  }
+
+  // 3. Detect short gibberish / meaningless tokens (except valid short MCQ/numerical value)
+  if (params.questionType !== "mcq" && raw.length < 12 && !/\d/.test(raw)) {
+    return {
+      hardZero: true,
+      reason: "Answer is too short or lacks meaningful subject content. Strictly 0 marks allocated.",
+      matchedKeywords: [],
+      missingKeywords: kwList,
+      matchedDomainCount: 0,
+      relevanceRatio: 0
+    };
+  }
+
+  // 4. Detect repetitive word stuffing (e.g. typing the same word 8 times to fill space)
+  if (words.length >= 6) {
+    const uniqueRatio = new Set(words).size / words.length;
+    if (uniqueRatio < 0.35) {
+      return {
+        hardZero: true,
+        reason: "Repetitive slot-filling words detected without genuine explanation. Strictly 0 marks allocated.",
+        matchedKeywords: [],
+        missingKeywords: kwList,
+        matchedDomainCount: 0,
+        relevanceRatio: 0
+      };
+    }
+  }
+
+  // 5. Detect keyboard mashing (many long alphabetic words without vowels)
+  const longAlphaWords = words.filter((w) => /^[a-z]{4,}$/.test(w));
+  if (longAlphaWords.length >= 2) {
+    const vowellessCount = longAlphaWords.filter((w) => !/[aeiouy]/.test(w)).length;
+    if (vowellessCount / longAlphaWords.length >= 0.55) {
+      return {
+        hardZero: true,
+        reason: "Unreadable gibberish / keyboard mashing detected. Strictly 0 marks allocated.",
+        matchedKeywords: [],
+        missingKeywords: kwList,
+        matchedDomainCount: 0,
+        relevanceRatio: 0
+      };
+    }
+  }
+
+  // 6. Match against question-specific keywords + modelAnswer + question domain concepts
+  const matchedKeywords = kwList.filter((kw) => {
+    const kwLower = kw.toLowerCase().trim();
+    if (!kwLower) return false;
+    if (lower.includes(kwLower)) return true;
+    const kwTokens = extractMeaningfulTokens(kwLower);
+    return kwTokens.length > 0 && kwTokens.every((kt) => words.some((aw) => tokenMatches(aw, kt)));
+  });
+  const missingKeywords = kwList.filter((kw) => !matchedKeywords.includes(kw));
+
+  const ansDomainTokens = extractMeaningfulTokens(raw);
+  const answerRefTokens = Array.from(
+    new Set([
+      ...extractMeaningfulTokens(params.modelAnswer),
+      ...extractMeaningfulTokens(kwList.join(" "))
+    ])
+  );
+  const questionRefTokens = Array.from(new Set(extractMeaningfulTokens(params.question)));
+  const allRefTokens = Array.from(new Set([...answerRefTokens, ...questionRefTokens]));
+
+  const matchedFromModelOrKw = answerRefTokens.filter((rt) =>
+    ansDomainTokens.some((aw) => tokenMatches(aw, rt))
+  );
+  const matchedFromAllRef = allRefTokens.filter((rt) =>
+    ansDomainTokens.some((aw) => tokenMatches(aw, rt))
+  );
+
+  // 7. Detect verbatim copy-pasting of the question prompt without adding answer concepts
+  if (questionRefTokens.length >= 3 && ansDomainTokens.length >= 3) {
+    const copiedFromQuestionOnly = ansDomainTokens.filter(
+      (aw) =>
+        questionRefTokens.some((qt) => tokenMatches(aw, qt)) &&
+        !answerRefTokens.some((at) => tokenMatches(aw, at))
+    ).length;
+    if (copiedFromQuestionOnly / ansDomainTokens.length >= 0.72 && matchedFromModelOrKw.length === 0) {
+      return {
+        hardZero: true,
+        reason: "Answer merely repeats the question prompt without providing any solution concepts. Strictly 0 marks allocated.",
+        matchedKeywords: [],
+        missingKeywords: kwList,
+        matchedDomainCount: 0,
+        relevanceRatio: 0
+      };
+    }
+  }
+
+  // Numerical check: allow valid numeric calculations if numbers & formulas/units or domain terms appear
+  const hasNumericalSteps = params.questionType === "numerical" && /\d+/.test(raw) && /[=+\-*/%]/.test(raw);
+  const matchedDomainCount = matchedKeywords.length + matchedFromModelOrKw.length;
+  const relevanceRatio =
+    allRefTokens.length > 0 ? Math.min(1, matchedFromAllRef.length / Math.min(6, allRefTokens.length)) : 0;
+
+  if (matchedKeywords.length === 0 && matchedFromModelOrKw.length === 0 && matchedFromAllRef.length === 0 && !hasNumericalSteps) {
+    return {
+      hardZero: true,
+      reason: "Submitted answer is unrelated or senseless for this question. Strictly 0 marks allocated.",
+      matchedKeywords: [],
+      missingKeywords: kwList,
+      matchedDomainCount: 0,
+      relevanceRatio: 0
+    };
+  }
+
+  return {
+    hardZero: false,
+    reason: "",
+    matchedKeywords,
+    missingKeywords,
+    matchedDomainCount,
+    relevanceRatio
+  };
+}
+
 const cache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL_MS = 1000 * 60 * 30; // 30 minutes
 
@@ -798,44 +1008,76 @@ Fields per item:
     const buildFallbackEvaluation = () => {
       const userText = String(userAnswer || "").trim();
       const kwList: string[] = Array.isArray(keywords) ? keywords : [];
-      const matchedKw = kwList.filter((kw) => userText.toLowerCase().includes(kw.toLowerCase()));
-      const missingKw = kwList.filter((kw) => !userText.toLowerCase().includes(kw.toLowerCase()));
 
-      let computedScore: number;
-      if (hasHandwrittenImage && !userText) {
-        // Fallback when handwritten photo is attached and vision model timed out
-        computedScore = questionType === "numerical" ? 6.5 : 6.0;
-      } else {
-        const kwRatio = kwList.length > 0 ? matchedKw.length / kwList.length : 0.6;
-        const targetChars = questionType === "long" ? 700 : questionType === "numerical" ? 300 : questionType === "mcq" ? 20 : 180;
-        const lengthFactor = Math.min(1, userText.length / targetChars);
-        computedScore = Math.min(10, Math.max(1.5, Math.round((kwRatio * 6 + lengthFactor * 3.5 + 0.5) * 10) / 10));
+      if (!userText && hasHandwrittenImage) {
+        return {
+          score: 0,
+          obtainedMarks: 0,
+          questionMarks,
+          requiredScore: 4.0,
+          requiredDistinctionScore: 7.5,
+          maxScore: 10,
+          isPassed: false,
+          scoreGap: -4.0,
+          transcribedAnswer: "Uploaded image could not be verified as a valid relevant answer.",
+          coveredPoints: [],
+          missingPoints: [{ point: "Upload a clear, legible handwritten answer photo strictly addressing this question.", potentialMarks: `+${questionMarks} Marks` }],
+          upgradedAnswerSuggestion: "Ensure your uploaded image shows a handwritten answer or diagram directly solving this exact question.",
+          idealUniversityAnswer: modelAnswer || "Provide a crisp definition, structured key points, governing formula/architecture, and a real-world example.",
+          feedback: `Allocated 0/${questionMarks} marks: Uploaded image could not be verified as relevant to this question.`
+        };
       }
+
+      const rel = assessStrictAnswerRelevance({
+        question,
+        modelAnswer,
+        keywords: kwList,
+        typedText: userText,
+        questionType
+      });
+
+      if (rel.hardZero || (rel.matchedKeywords.length === 0 && rel.matchedDomainCount < 1)) {
+        return {
+          score: 0,
+          obtainedMarks: 0,
+          questionMarks,
+          requiredScore: 4.0,
+          requiredDistinctionScore: 7.5,
+          maxScore: 10,
+          isPassed: false,
+          scoreGap: -4.0,
+          transcribedAnswer: userText,
+          coveredPoints: [],
+          missingPoints: [{ point: rel.reason || "Answer does not address the asked question.", potentialMarks: `+${questionMarks} Marks` }],
+          upgradedAnswerSuggestion: `Write a relevant technical answer covering ${kwList.slice(0, 3).join(", ") || "the exact concepts asked in the question"}.`,
+          idealUniversityAnswer: modelAnswer || "Provide a crisp definition, structured key points, governing formula/architecture, and a real-world example.",
+          feedback: `Allocated 0/${questionMarks} marks: ${rel.reason || "Answer is unrelated or senseless for this question."}`
+        };
+      }
+
+      const matchedKw = rel.matchedKeywords;
+      const missingKw = rel.missingKeywords;
+      const kwRatio = kwList.length > 0 ? matchedKw.length / kwList.length : rel.relevanceRatio;
+      const targetChars = questionType === "long" ? 700 : questionType === "numerical" ? 300 : questionType === "mcq" ? 20 : 180;
+      const lengthFactor = Math.min(1, userText.length / targetChars) * Math.max(0.3, rel.relevanceRatio);
+      const computedScore = Math.min(10, Math.round((kwRatio * 6 + lengthFactor * 3.5) * 10) / 10);
 
       const obtainedMarks =
         questionType === "mcq"
           ? computedScore >= 5 ? 1 : 0
-          : Math.min(questionMarks, Math.max(0.5, Math.round(((computedScore / 10) * questionMarks) * 2) / 2));
+          : Math.min(questionMarks, Math.round(((computedScore / 10) * questionMarks) * 2) / 2);
       const requiredScore = 4.0;
 
-      const coveredPoints = hasHandwrittenImage && !userText
-        ? [
-            "Submitted handwritten answer sheet photo for evaluation",
-            ...(kwList.slice(0, 2).map((k) => `Structured presentation covering ${k}`))
-          ]
-        : matchedKw.length > 0
-          ? matchedKw.map((k) => `Correctly included key concept: ${k}`)
-          : userText.length > 25
-            ? ["Attempted core explanation in your own words"]
-            : [];
+      const coveredPoints = matchedKw.length > 0
+        ? matchedKw.map((k) => `Correctly included key concept: ${k}`)
+        : ["Relevant technical terms included for this question"];
 
-      const effectiveMissing = hasHandwrittenImage && !userText ? kwList.slice(2) : missingKw;
-      const markPerMissing = effectiveMissing.length > 0
-        ? Math.max(0.5, Math.round(((questionMarks - obtainedMarks) / effectiveMissing.length) * 2) / 2)
+      const markPerMissing = missingKw.length > 0
+        ? Math.max(0.5, Math.round(((questionMarks - obtainedMarks) / missingKw.length) * 2) / 2)
         : 0.5;
 
-      const missingPoints = effectiveMissing.length > 0
-        ? effectiveMissing.slice(0, 3).map((k) => ({
+      const missingPoints = missingKw.length > 0
+        ? missingKw.slice(0, 3).map((k) => ({
             point: `Include and highlight '${k}' with a crisp technical example or formula.`,
             potentialMarks: `+${markPerMissing} Marks`
           }))
@@ -848,11 +1090,9 @@ Fields per item:
             }]
           : [];
 
-      const upgradedAnswerSuggestion = hasHandwrittenImage && !userText
-        ? `Underline key technical headings in your handwritten sheet and ensure ${kwList.slice(0, 2).join(" & ") || "all formulas and a labeled diagram"} stand out clearly to hit ${questionMarks}/${questionMarks} marks.`
-        : missingKw.length > 0
-          ? `Keep your opening phrasing ("${userText.slice(0, 90)}${userText.length > 90 ? "..." : ""}"), and immediately follow it with a clear bullet covering ${missingKw.slice(0, 2).join(" and ")} plus one concrete exam example to secure ${questionMarks}/${questionMarks} marks.`
-          : `Tighten your response into crisp numbered points highlighting ${kwList.slice(0, 3).join(", ")} and conclude with a 1-line practical example.`;
+      const upgradedAnswerSuggestion = missingKw.length > 0
+        ? `Keep your opening phrasing ("${userText.slice(0, 90)}${userText.length > 90 ? "..." : ""}"), and immediately follow it with a clear bullet covering ${missingKw.slice(0, 2).join(" and ")} plus one concrete exam example to secure ${questionMarks}/${questionMarks} marks.`
+        : `Tighten your response into crisp numbered points highlighting ${kwList.slice(0, 3).join(", ")} and conclude with a 1-line practical example.`;
 
       const masteryPct = Math.round((obtainedMarks / questionMarks) * 100);
       return {
@@ -864,40 +1104,59 @@ Fields per item:
         maxScore: 10,
         isPassed: computedScore >= requiredScore,
         scoreGap: Math.round((computedScore - requiredScore) * 10) / 10,
-        transcribedAnswer: hasHandwrittenImage
-          ? (userText || "Handwritten sheet processed (attach clear well-lit photo for line-by-line OCR transcript).")
-          : userText,
+        transcribedAnswer: userText,
         coveredPoints,
         missingPoints,
         upgradedAnswerSuggestion,
         idealUniversityAnswer: modelAnswer || "Provide a crisp definition, structured key points, governing formula/architecture, and a real-world example.",
-        feedback: `Allotted ${obtainedMarks}/${questionMarks} marks (${masteryPct}% mastery). ${hasHandwrittenImage ? "Evaluated handwritten submission" : `Matched ${matchedKw.length} of ${kwList.length || 0} key exam concepts`}.`
+        feedback: `Allotted ${obtainedMarks}/${questionMarks} marks (${masteryPct}% mastery). Matched ${matchedKw.length} of ${kwList.length || 0} key exam concepts.`
       };
     };
 
     try {
-      const prompt = `You are a supportive university exam coach evaluating a student's practice answer${hasHandwrittenImage ? " from their uploaded handwritten answer sheet photo" : ""}.
+      // Hard deterministic pre-check for typed-only senseless/gibberish/copy-paste answers
+      if (!hasHandwrittenImage) {
+        const preCheck = assessStrictAnswerRelevance({
+          question,
+          modelAnswer,
+          keywords: Array.isArray(keywords) ? keywords : [],
+          typedText: String(userAnswer || ""),
+          questionType
+        });
+        if (preCheck.hardZero) {
+          return res.json(buildFallbackEvaluation());
+        }
+      }
+
+      const prompt = `You are a strict university exam evaluator grading a student's answer${hasHandwrittenImage ? " from their uploaded handwritten answer sheet photo" : ""}.
 Question (${questionMarks} Marks, type: ${questionType}): "${question}"
 Model Answer Reference: "${modelAnswer}"
 Mandatory Key Terms: ${(keywords || []).join(", ")}
 ${userAnswer ? `Student Typed Note / Answer: "${userAnswer}"` : ""}
-${hasHandwrittenImage ? "INSTRUCTIONS FOR HANDWRITTEN PHOTO: Carefully read every line, equation, derivation step, and labeled diagram written by the student in the attached image. First transcribe what they wrote accurately into 'transcribedAnswer', then grade it fairly out of " + questionMarks + " marks." : ""}
+${hasHandwrittenImage ? "INSTRUCTIONS FOR HANDWRITTEN PHOTO: Carefully inspect and transcribe the uploaded image into 'transcribedAnswer'. Verify that the image ACTUALLY contains a handwritten answer, equation, derivation, or diagram specifically answering THIS exact question." : ""}
 
-Return a constructive Marks Breakdown & Gap-Filler JSON:
-1. score: 0 to 10 mastery score
-2. obtainedMarks: score scaled to ${questionMarks} marks (e.g. nearest 0.5)
-3. questionMarks: ${questionMarks}
-4. requiredScore: 4.0
-5. requiredDistinctionScore: 7.5
-6. maxScore: 10
-7. isPassed: boolean (score >= 4.0)
-8. scoreGap: score - 4.0
-9. transcribedAnswer: ${hasHandwrittenImage ? "clean transcription of the student's handwritten text, formulas, and noted diagrams from the photo" : "clean copy of the student's submitted text"}
-10. coveredPoints: 1-4 short strings listing concepts/keywords/steps the student covered well
-11. missingPoints: array of { point, potentialMarks } explaining exact missing points/formulas/diagrams and mark value (e.g. "+0.5 Marks", "+1 Mark")
-12. upgradedAnswerSuggestion: concrete guidance showing how to improve the student's exact answer to earn full ${questionMarks}/${questionMarks} marks
-13. idealUniversityAnswer: clean, point-wise ideal university answer formatted specifically for paper-checkers (with bullet points/steps)
-14. feedback: 1-2 sentence overall coaching summary citing marks out of ${questionMarks} (e.g., X/${questionMarks} marks), NOT out of 10`;
+CRITICAL STRICT ZERO-MARK RELEVANCE RULE:
+- Set isRelevantToQuestion = false, score = 0, and obtainedMarks = 0 STRICTLY if:
+  1. The typed answer is gibberish, keyboard mashing, filler text ("I don't know", "please give marks", "test"), copy-pasted question text, meaningless/senseless sentences, or completely unrelated to the asked question.
+  2. The uploaded image is blank, unreadable, a random photo (selfie, scenery, object, meme, unrelated screenshot), or handwritten text about a DIFFERENT unrelated topic/question.
+- NEVER award mercy marks, participation marks, or length marks for irrelevant or senseless slot-filling. Allocate marks (> 0) ONLY when genuine technical content answering THIS question is present.
+
+Return JSON:
+1. isRelevantToQuestion: boolean (false if unrelated, senseless, gibberish, filler, blank, or wrong topic)
+2. score: 0 to 10 mastery score (MUST be 0 if isRelevantToQuestion is false)
+3. obtainedMarks: score scaled to ${questionMarks} marks in 0.5 steps (MUST be 0 if isRelevantToQuestion is false)
+4. questionMarks: ${questionMarks}
+5. requiredScore: 4.0
+6. requiredDistinctionScore: 7.5
+7. maxScore: 10
+8. isPassed: boolean (score >= 4.0 and isRelevantToQuestion is true)
+9. scoreGap: score - 4.0
+10. transcribedAnswer: ${hasHandwrittenImage ? "exact transcription of what is visible in the uploaded image" : "clean copy of the student's submitted text"}
+11. coveredPoints: 0-4 short strings listing concepts/keywords/steps covered well (empty array [] if irrelevant/0 marks)
+12. missingPoints: array of { point, potentialMarks } explaining exact missing points/formulas/diagrams
+13. upgradedAnswerSuggestion: concrete guidance showing how to write a relevant ${questionMarks}/${questionMarks} answer
+14. idealUniversityAnswer: clean, point-wise ideal university answer formatted for paper-checkers
+15. feedback: 1-2 sentence summary citing marks out of ${questionMarks} (if 0, clearly state it was unrelated/senseless)`;
 
       const contentsPayload = hasHandwrittenImage
         ? {
@@ -921,6 +1180,7 @@ Return a constructive Marks Breakdown & Gap-Filler JSON:
           responseSchema: {
             type: Type.OBJECT,
             properties: {
+              isRelevantToQuestion: { type: Type.BOOLEAN },
               score: { type: Type.NUMBER },
               obtainedMarks: { type: Type.NUMBER },
               questionMarks: { type: Type.NUMBER },
@@ -947,6 +1207,7 @@ Return a constructive Marks Breakdown & Gap-Filler JSON:
               feedback: { type: Type.STRING }
             },
             required: [
+              "isRelevantToQuestion",
               "score",
               "obtainedMarks",
               "questionMarks",
@@ -970,16 +1231,24 @@ Return a constructive Marks Breakdown & Gap-Filler JSON:
         if (!parsed.requiredDistinctionScore) parsed.requiredDistinctionScore = 7.5;
         if (!parsed.maxScore) parsed.maxScore = 10;
         parsed.questionMarks = questionMarks;
-        if (typeof parsed.obtainedMarks !== "number") {
-          parsed.obtainedMarks =
-            questionType === "mcq"
-              ? parsed.score >= 5 ? 1 : 0
-              : Math.min(questionMarks, Math.round(((parsed.score / 10) * questionMarks) * 2) / 2);
+        if (parsed.isRelevantToQuestion === false) {
+          parsed.score = 0;
+          parsed.obtainedMarks = 0;
+          parsed.isPassed = false;
+          parsed.scoreGap = -4.0;
+          parsed.coveredPoints = [];
         } else {
-          parsed.obtainedMarks = Math.min(questionMarks, Math.max(0, parsed.obtainedMarks));
+          if (typeof parsed.obtainedMarks !== "number") {
+            parsed.obtainedMarks =
+              questionType === "mcq"
+                ? parsed.score >= 5 ? 1 : 0
+                : Math.min(questionMarks, Math.round(((parsed.score / 10) * questionMarks) * 2) / 2);
+          } else {
+            parsed.obtainedMarks = Math.min(questionMarks, Math.max(0, parsed.obtainedMarks));
+          }
+          if (typeof parsed.isPassed !== "boolean") parsed.isPassed = parsed.score >= parsed.requiredScore;
+          if (typeof parsed.scoreGap !== "number") parsed.scoreGap = Math.round((parsed.score - parsed.requiredScore) * 10) / 10;
         }
-        if (typeof parsed.isPassed !== "boolean") parsed.isPassed = parsed.score >= parsed.requiredScore;
-        if (typeof parsed.scoreGap !== "number") parsed.scoreGap = Math.round((parsed.score - parsed.requiredScore) * 10) / 10;
         if (!Array.isArray(parsed.coveredPoints)) parsed.coveredPoints = [];
         if (!Array.isArray(parsed.missingPoints)) parsed.missingPoints = [];
         if (!parsed.idealUniversityAnswer) parsed.idealUniversityAnswer = modelAnswer;
@@ -1399,35 +1668,85 @@ Structure strictly:
 
       const buildFallbackPartResult = () => {
         const kwList: string[] = Array.isArray(item.keywords) ? item.keywords : [];
-        const matched = kwList.filter((k) => typedText.toLowerCase().includes(k.toLowerCase()));
-        const missing = kwList.filter((k) => !typedText.toLowerCase().includes(k.toLowerCase()));
-        let obtained = 0;
+
         if (hasImage && !typedText) {
-          obtained = 4.5;
-        } else {
-          const kwScore = kwList.length > 0 ? matched.length / kwList.length : 0.5;
-          const lenScore = Math.min(1, typedText.length / 450);
-          obtained = Math.min(qMarks, Math.max(1, Math.round((kwScore * 4 + lenScore * 3) * 2) / 2));
+          return {
+            ...item,
+            obtainedMarks: 0,
+            maxMarks: qMarks,
+            transcribedAnswer: "Uploaded image could not be verified as a relevant answer for this question.",
+            coveredPoints: [],
+            missingPoints: [{ point: "Upload a clear, legible handwritten solution strictly answering this exact question.", potentialMarks: `+${qMarks} Marks` }],
+            feedback: `Strictly 0/${qMarks} marks: Uploaded image could not be verified as relevant to this question.`
+          };
         }
+
+        const rel = assessStrictAnswerRelevance({
+          question: item.question || "",
+          modelAnswer: item.modelAnswer || "",
+          keywords: kwList,
+          typedText,
+          questionType: item.type
+        });
+
+        if (rel.hardZero || (rel.matchedKeywords.length === 0 && rel.matchedDomainCount < 1)) {
+          return {
+            ...item,
+            obtainedMarks: 0,
+            maxMarks: qMarks,
+            transcribedAnswer: typedText,
+            coveredPoints: [],
+            missingPoints: [{ point: rel.reason || "Answer is unrelated, senseless, or does not address the question.", potentialMarks: `+${qMarks} Marks` }],
+            feedback: `Strictly 0/${qMarks} marks: ${rel.reason || "Submitted answer is unrelated or senseless for this question."}`
+          };
+        }
+
+        const matched = rel.matchedKeywords;
+        const missing = rel.missingKeywords;
+        const kwScore = kwList.length > 0 ? matched.length / kwList.length : rel.relevanceRatio;
+        const lenScore = Math.min(1, typedText.length / 450) * Math.max(0.3, rel.relevanceRatio);
+        const obtained = Math.min(qMarks, Math.round((kwScore * 4 + lenScore * 3) * 2) / 2);
+
         return {
           ...item,
           obtainedMarks: obtained,
           maxMarks: qMarks,
-          transcribedAnswer: hasImage ? (typedText || "Handwritten answer photo submitted") : typedText,
-          coveredPoints: matched.length > 0 ? matched.map((k) => `Covered: ${k}`) : [hasImage ? "Handwritten explanation submitted" : "Relevant conceptual attempt"],
+          transcribedAnswer: typedText,
+          coveredPoints: matched.length > 0 ? matched.map((k) => `Covered: ${k}`) : ["Relevant technical concepts addressed"],
           missingPoints: missing.slice(0, 2).map((k) => ({ point: `Elaborate on '${k}' with an example or diagram`, potentialMarks: "+1 Mark" })),
-          feedback: `Awarded ${obtained}/${qMarks} marks.`
+          feedback: `Awarded ${obtained}/${qMarks} marks based on relevant concepts covered.`
         };
       };
 
       try {
-        const prompt = `Grade this ${qMarks}-mark university mock exam answer for '${subject}'.
+        // Strict deterministic gate on typed-only submissions (never award marks to gibberish/filler/copy-paste)
+        if (!hasImage) {
+          const preCheck = assessStrictAnswerRelevance({
+            question: item.question || "",
+            modelAnswer: item.modelAnswer || "",
+            keywords: Array.isArray(item.keywords) ? item.keywords : [],
+            typedText,
+            questionType: item.type
+          });
+          if (preCheck.hardZero) {
+            return buildFallbackPartResult();
+          }
+        }
+
+        const prompt = `You are a strict university paper-checker grading a ${qMarks}-mark mock exam answer for '${subject}'.
 Question: "${item.question}"
 Reference Points: "${item.modelAnswer || ""}"
 Keywords: ${(item.keywords || []).join(", ")}
 ${typedText ? `Typed Answer: "${typedText}"` : ""}
-${hasImage ? "Read the handwritten answer photo carefully, transcribe key points into transcribedAnswer, and grade fairly out of " + qMarks + "." : ""}
-Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, coveredPoints (1-3 strings), missingPoints ([{point, potentialMarks}]), feedback (1 crisp sentence) }.`;
+${hasImage ? "HANDWRITTEN IMAGE CHECK: Read and transcribe the uploaded photo into transcribedAnswer. Verify whether the image actually contains handwritten text, equations, or diagrams specifically answering THIS question." : ""}
+
+STRICT ZERO-MARK RELEVANCE RULE (MANDATORY):
+- Allocate 0 marks (obtainedMarks = 0, isRelevantToQuestion = false) STRICTLY if:
+  1. The typed answer is senseless, gibberish, keyboard mashing, filler sentences ("I don't know", "please give marks", "test"), copy-pasted question text, or completely unrelated to this question.
+  2. The uploaded image is blank, unreadable, a random photo (selfie, room, object, meme, unrelated screenshot), or handwritten notes for a completely different/unrelated question or subject.
+- ONLY allocate marks (> 0) when genuine relevant technical explanation, derivation, or diagram for THIS EXACT QUESTION is present. Never give free slot-filling or participation marks.
+
+Return JSON: { isRelevantToQuestion (boolean), obtainedMarks (0 to ${qMarks} in 0.5 steps; MUST be 0 if isRelevantToQuestion is false), transcribedAnswer, coveredPoints (0-3 strings; [] if 0 marks), missingPoints ([{point, potentialMarks}]), feedback (1 crisp sentence) }.`;
 
         const contents = hasImage
           ? { parts: [{ inlineData: { data: cleanImg, mimeType: imgMime } }, { text: prompt }] }
@@ -1442,6 +1761,7 @@ Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, c
             responseSchema: {
               type: Type.OBJECT,
               properties: {
+                isRelevantToQuestion: { type: Type.BOOLEAN },
                 obtainedMarks: { type: Type.NUMBER },
                 transcribedAnswer: { type: Type.STRING },
                 coveredPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -1457,20 +1777,25 @@ Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, c
                 },
                 feedback: { type: Type.STRING }
               },
-              required: ["obtainedMarks", "coveredPoints", "missingPoints", "feedback"]
+              required: ["isRelevantToQuestion", "obtainedMarks", "coveredPoints", "missingPoints", "feedback"]
             }
           }
         });
         const parsed = JSON.parse(cleanJsonText(response.text || "{}"));
-        const obtained = Math.min(qMarks, Math.max(0, Math.round((Number(parsed.obtainedMarks) || 0) * 2) / 2));
+        const isRelevant = parsed.isRelevantToQuestion !== false;
+        const obtained = isRelevant
+          ? Math.min(qMarks, Math.max(0, Math.round((Number(parsed.obtainedMarks) || 0) * 2) / 2))
+          : 0;
         return {
           ...item,
           obtainedMarks: obtained,
           maxMarks: qMarks,
           transcribedAnswer: parsed.transcribedAnswer || typedText,
-          coveredPoints: Array.isArray(parsed.coveredPoints) ? parsed.coveredPoints : [],
+          coveredPoints: isRelevant && Array.isArray(parsed.coveredPoints) ? parsed.coveredPoints : [],
           missingPoints: Array.isArray(parsed.missingPoints) ? parsed.missingPoints : [],
-          feedback: parsed.feedback || `Awarded ${obtained}/${qMarks} marks.`
+          feedback: isRelevant
+            ? parsed.feedback || `Awarded ${obtained}/${qMarks} marks.`
+            : parsed.feedback || `Strictly 0/${qMarks} marks: Submitted answer or image is unrelated or senseless for this question.`
         };
       } catch {
         return buildFallbackPartResult();
@@ -1499,13 +1824,13 @@ Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, c
 
   const proctorPresenceLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: 120,
+    max: 400,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Proctoring check rate limit exceeded." }
   });
 
-  // 6C-2. Real-Time Camera Proctoring Check (Shutter/Blocked + Other Person + Object Detected + Candidate Absence)
+  // 6C-2. Real-Time Heavy Camera Proctoring Check (Shutter/Blocked + Other Person + Object Detected + Candidate Absence)
   app.post("/api/gemini/proctor-presence", proctorPresenceLimiter, async (req, res) => {
     const { imageBase64 = "", mimeType = "image/jpeg" } = req.body || {};
     let cleanImg = String(imageBase64 || "").trim();
@@ -1530,23 +1855,24 @@ Return JSON: { obtainedMarks (0 to ${qMarks} in 0.5 steps), transcribedAnswer, c
         objectDetected: false,
         violationType: "shutter_blocked",
         detectedItem: "blocked camera",
-        reason: "Privacy shutter closed or camera lens blocked. Open shutter or remove object."
+        reason: "Privacy shutter closed or camera lens blocked. Open shutter or remove object immediately."
       });
     }
 
     try {
-      const prompt = `Analyze this webcam proctoring frame from an online exam and return strict JSON for these 4 checks:
-1. shutterClosedOrBlocked: true ONLY if a laptop privacy shutter is closed, a finger/cloth/tape covers the lens, or the image is completely solid black/uniformly obstructed.
-2. otherPersonDetected: true if MORE THAN ONE human face or person (2+ people, someone standing behind, peeking, or sitting beside the candidate) is visible anywhere in the camera frame.
-3. objectDetected: true if the candidate brings or shows ANY handheld or foreground object apart from their own face/head/neck/normal shirt/eyeglasses/wall background (for example: mobile phone, book, notebook, paper sheet, pen held up, bottle, cup, tablet, calculator, earphones held in hand, watch, card, box, or any foreign object).
-4. personPresent: true if at least one human candidate face/head is visible in front of the camera; false if no human is visible (empty chair, blank wall, curtain).
+      const prompt = `You are a STRICT zero-tolerance online exam AI proctor. Inspect every corner of this webcam frame carefully and return strict JSON:
+1. shutterClosedOrBlocked (boolean): true ONLY if a laptop privacy shutter is closed, a finger/cloth/tape covers the lens, or the frame is dark/solid/completely obscured.
+2. otherPersonDetected (boolean): true if MORE THAN ONE human (2 or more people, anyone standing/walking/sitting behind or beside, peeking face, extra head/hand/person, or reflection of another person) is visible ANYWHERE in the frame.
+3. objectDetected (boolean): true if ANY unauthorized or foreground/handheld object is visible ANYWHERE in the frame apart from the candidate's own face/head/neck/normal clothing/eyeglasses and distant wall/chair behind them. Strictly flag: mobile phone/smartphone, tablet, smart watch, second screen/laptop, book, notebook, paper/cheat-sheet, pen/pencil held up, bottle, cup/mug, earphones/earbuds/headphones, calculator, box, bag, or any item held in hand or raised toward camera.
+4. personPresent (boolean): true ONLY if the single exam candidate's face is clearly visible in front of the camera; false if no face is visible (empty seat, blank wall, stepped away, or head completely out of frame).
 
+Set detectedItem to the short name of the detected object or "2+ people" or "none".
 Set violationType strictly to one of:
 - "shutter_blocked" if shutterClosedOrBlocked is true
 - "other_person_detected" if otherPersonDetected is true
 - "object_detected" if objectDetected is true
 - "person_absent" if personPresent is false
-- "none" if ONLY 1 candidate face is clearly visible with NO other person and NO extra object.`;
+- "none" ONLY if exactly 1 candidate face is clearly visible with ZERO extra people and ZERO unauthorized objects.`;
 
       const geminiCheck = generateWithModelFallback({
         preferFast: true,
@@ -1557,7 +1883,7 @@ Set violationType strictly to one of:
           ]
         },
         config: {
-          maxOutputTokens: 140,
+          maxOutputTokens: 300,
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -1576,6 +1902,7 @@ Set violationType strictly to one of:
               "objectDetected",
               "personPresent",
               "violationType",
+              "detectedItem",
               "reason"
             ]
           }
@@ -1585,7 +1912,7 @@ Set violationType strictly to one of:
       const TIMEOUT_SENTINEL = Symbol("TIMEOUT");
       const raceResult: any = await Promise.race([
         geminiCheck,
-        new Promise<typeof TIMEOUT_SENTINEL>((resolve) => setTimeout(() => resolve(TIMEOUT_SENTINEL), 4500))
+        new Promise<typeof TIMEOUT_SENTINEL>((resolve) => setTimeout(() => resolve(TIMEOUT_SENTINEL), 4000))
       ]);
 
       if (!raceResult || raceResult === TIMEOUT_SENTINEL) {
@@ -1618,7 +1945,8 @@ Set violationType strictly to one of:
               ? "person_absent"
               : "none";
 
-      const itemLabel = parsed.detectedItem && parsed.detectedItem !== "none" ? parsed.detectedItem : "object";
+      const itemLabel = parsed.detectedItem && parsed.detectedItem !== "none" ? parsed.detectedItem : "unauthorized object";
+      const extraNote = otherPerson && objDetected ? ` (Also detected object: ${itemLabel})` : "";
 
       return res.json({
         shutterClosedOrBlocked: shutter,
@@ -1631,9 +1959,9 @@ Set violationType strictly to one of:
           vType === "shutter_blocked"
             ? parsed.reason || "Privacy shutter closed or object covering lens. Remove object or open camera."
             : vType === "other_person_detected"
-              ? `Other Person Detected: ${parsed.reason || "Two or more people visible on camera."}`
+              ? `Other Person Detected: ${parsed.reason || "Two or more people visible on camera."}${extraNote}`
               : vType === "object_detected"
-                ? `Object Detected (${itemLabel}): ${parsed.reason || "Remove any object apart from your face."}`
+                ? `Object Detected (${itemLabel}): ${parsed.reason || "Remove any object apart from your face immediately."}`
                 : vType === "person_absent"
                   ? parsed.reason || "Candidate not present on camera."
                   : "Single candidate verified on camera."
